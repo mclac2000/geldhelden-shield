@@ -5,6 +5,7 @@
 import { getAllGroups, getDatabase } from './db';
 import { updateGroupProfileFromTitle } from './groupIntelligence';
 import { startAdminSyncScheduler } from './adminSync';
+import { startBriefingScheduler } from './dailyBriefing';
 import { Telegraf } from 'telegraf';
 
 /**
@@ -84,6 +85,9 @@ export function runStartupMigration(bot: Telegraf): void {
   
   // 3. Starte Admin-Sync (wird intern auch sofort ausgeführt)
   startAdminSyncScheduler(bot);
-  
+
+  // 4. Starte Daily Briefing Scheduler (täglich um 08:00)
+  startBriefingScheduler(bot);
+
   console.log('[MIGRATION] Startup-Migration abgeschlossen');
 }

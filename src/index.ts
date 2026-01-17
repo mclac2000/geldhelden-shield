@@ -1,6 +1,6 @@
 import { Telegraf, Context } from 'telegraf';
 import { config } from './config';
-import { initDatabase, registerGroup, closeDatabase, getGroup, getDistinctChatsInWindow, addToBlacklist, isBlacklisted, setUserObserved, isUserObserved, getUserIdsInManagedGroups, getManagedGroups, getOrCreateUser, updateUserStatus, hasRecentEscalation, recordEscalation, getJoinCount24h, hasRecentImpersonationWarning, recordImpersonationWarning, isUsernameBlacklisted, saveBaselineMember, recordJoin, isTeamMember, ensureUserExists, ensureGroupExists, getAllGroups } from './db';
+import { initDatabase, registerGroup, closeDatabase, getGroup, getDistinctChatsInWindow, addToBlacklist, isBlacklisted, setUserObserved, isUserObserved, getUserIdsInManagedGroups, getManagedGroups, getOrCreateUser, updateUserStatus, hasRecentEscalation, recordEscalation, getJoinCount24h, hasRecentImpersonationWarning, recordImpersonationWarning, isUsernameBlacklisted, saveBaselineMember, recordJoin, isTeamMember, ensureUserExists, ensureGroupExists, getAllGroups, getDatabase } from './db';
 import { isDuplicateJoin, joinDedupManager } from './dedup';
 import { assessJoinRisk, runDecayMaintenance } from './risk';
 import { runClusterDetection } from './cluster';
@@ -1467,6 +1467,57 @@ bot.on('callback_query', async (ctx: Context) => {
           ctx,
           false
         );
+      }
+    } else if (action === 'unrestrict') {
+      // UNRESTRICT - Entsperre User (via Daily Briefing Button)
+      await ctx.answerCbQuery('⏳ Entsperre User...', { show_alert: false });
+
+      try {
+        // Restriction in Telegram aufheben
+        await ctx.telegram.restrictChatMember(chatId, userId, {
+          permissions: {
+            can_send_messages: true,
+            can_send_audios: true,
+            can_send_documents: true,
+            can_send_photos: true,
+            can_send_videos: true,
+            can_send_video_notes: true,
+            can_send_voice_notes: true,
+            can_send_polls: true,
+            can_send_other_messages: true,
+            can_add_web_page_previews: true,
+            can_change_info: false,
+            can_invite_users: true,
+            can_pin_messages: false,
+          },
+        });
+
+        // Action in DB loggen
+        const db = getDatabase();
+        db.prepare(`
+          INSERT INTO actions (user_id, chat_id, action, reason, created_at)
+          VALUES (?, ?, 'unrestrict', 'Manual unrestrict via Daily Briefing', ?)
+        `).run(userId, chatId, Date.now());
+
+        // User-Status in DB aktualisieren
+        db.prepare(`
+          UPDATE users SET status = 'ok' WHERE user_id = ?
+        `).run(userId);
+
+        const adminName = ctx.from?.username || ctx.from?.first_name || 'Admin';
+        console.log(`[BRIEFING] User ${userId} in Chat ${chatId} entsperrt durch ${adminName}`);
+
+        // Aktualisiere Button zu "Entsperrt"
+        try {
+          await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+        } catch (editError: any) {
+          // Button-Update fehlgeschlagen, ignorieren
+        }
+
+        await ctx.answerCbQuery(`✅ User ${userId} wurde entsperrt`, { show_alert: false });
+      } catch (error: any) {
+        console.error('[BRIEFING] Fehler beim Entsperren:', error.message);
+        await ctx.answerCbQuery(`❌ Fehler: ${error.message}`, { show_alert: true });
       }
     } else {
       await ctx.answerCbQuery('❌ Unbekannte Aktion');
