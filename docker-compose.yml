@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: geldhelden-shield-bot
+    restart: unless-stopped
+    # WICHTIG: Bei Migration-Fehlern (exit code 1) wird Container NICHT automatisch neu gestartet
+    # Prüfe Logs: docker logs geldhelden-shield-bot | grep "\[DB\]\[FATAL\]"
+    env_file:
+      - .env
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_LOG_CHAT=${ADMIN_LOG_CHAT}
+      - ADMIN_IDS=${ADMIN_IDS}
+      - JOIN_WINDOW_HOURS=${JOIN_WINDOW_HOURS:-24}
+      - JOIN_THRESHOLD=${JOIN_THRESHOLD:-5}
+      - ACTION_MODE=${ACTION_MODE:-restrict}
+      - TZ=${TZ:-Asia/Manila}
+      - DB_PATH=/data/shield.db
+    volumes:
+      - ./data:/data
+      - ./logs:/app/logs
+    networks:
+      - shield-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ============================================================================
+  # Shield Monitor – Log Health Service (optional)
+  # ============================================================================
+  # Sammelt Logs, klassifiziert Fehler, sendet tägliche Health-Reports.
+  # Aktiviere durch: docker-compose up -d monitor
+  # ============================================================================
+  monitor:
+    build: ./monitoring
+    container_name: shield-monitor
+    restart: unless-stopped
+    depends_on:
+      - bot
+    volumes:
+      # Read-only Docker Socket für Log-Zugriff
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    env_file:
+      - ./monitoring/.env
+    environment:
+      - TZ=${TZ:-Asia/Manila}
+    networks:
+      - shield-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    # Standardmäßig nicht gestartet (opt-in)
+    profiles:
+      - monitoring
+
+networks:
+  shield-network:
+    driver: bridge

@@ -1,0 +1,32 @@
+{
+  "name": "shield-monitor",
+  "version": "1.0.0",
+  "description": "Log Health & Monitoring Service für Geldhelden Shield",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "report": "ts-node src/index.ts --once"
+  },
+  "keywords": [
+    "monitoring",
+    "health-check",
+    "telegram"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "@types/node-cron": "^3.0.11",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
