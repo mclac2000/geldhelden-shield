@@ -1986,17 +1986,25 @@ bot.on('channel_post', async (ctx: Context) => {
     console.log('[DEBUG] channelPost chat.id:', channelPost.chat?.id);
 
     // Geldhelden News: Channel-Post an WordPress-Webhook weiterleiten
+    // Unterstuetzt text (reine Textnachrichten) UND caption (Bild/Video mit Text)
     const GELDHELDEN_KANAL_ID = '-1001848781746';
     const GHN_WEBHOOK_URL = 'https://geldhelden.org/wp-json/geldhelden-news/v1/telegram-input';
-    if (channelPost.chat?.id?.toString() === GELDHELDEN_KANAL_ID && channelPost.text) {
+    const postText = channelPost.text || channelPost.caption;
+    if (channelPost.chat?.id?.toString() === GELDHELDEN_KANAL_ID && postText) {
       try {
-        const payload = JSON.stringify({ channel_post: channelPost });
+        // Normalisiere: Wenn caption, kopiere als text + entities fuer den Webhook
+        const normalized = { ...channelPost };
+        if (!normalized.text && normalized.caption) {
+          normalized.text = normalized.caption;
+          normalized.entities = normalized.caption_entities || [];
+        }
+        const payload = JSON.stringify({ channel_post: normalized });
         const res = await fetch(GHN_WEBHOOK_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: payload,
         });
-        console.log(`[GHN_WEBHOOK] Weitergeleitet: msg_id=${channelPost.message_id} status=${res.status}`);
+        console.log(`[GHN_WEBHOOK] Weitergeleitet: msg_id=${channelPost.message_id} type=${channelPost.text ? 'text' : 'caption'} status=${res.status}`);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[GHN_WEBHOOK] Fehler bei Weiterleitung:`, msg);
