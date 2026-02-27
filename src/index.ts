@@ -1978,12 +1978,31 @@ bot.on('callback_query', async (ctx: Context) => {
   await handleVideoCallback(ctx);
 });
 
-// Channel Post Handler fuer Video-Tasks
+// Channel Post Handler fuer Video-Tasks + Geldhelden News Webhook
 bot.on('channel_post', async (ctx: Context) => {
   console.log('[DEBUG] channel_post event received');
   const channelPost = (ctx.update as any).channel_post;
   if (channelPost) {
     console.log('[DEBUG] channelPost chat.id:', channelPost.chat?.id);
+
+    // Geldhelden News: Channel-Post an WordPress-Webhook weiterleiten
+    const GELDHELDEN_KANAL_ID = '-1001848781746';
+    const GHN_WEBHOOK_URL = 'https://geldhelden.org/wp-json/geldhelden-news/v1/telegram-input';
+    if (channelPost.chat?.id?.toString() === GELDHELDEN_KANAL_ID && channelPost.text) {
+      try {
+        const payload = JSON.stringify({ channel_post: channelPost });
+        const res = await fetch(GHN_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+        });
+        console.log(`[GHN_WEBHOOK] Weitergeleitet: msg_id=${channelPost.message_id} status=${res.status}`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[GHN_WEBHOOK] Fehler bei Weiterleitung:`, msg);
+      }
+    }
+
     await handleChannelPost(bot, channelPost);
   }
 });
