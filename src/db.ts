@@ -3919,6 +3919,10 @@ export function logScamEvent(
   const db = getDatabase();
   
   try {
+    // Stelle sicher, dass User und Gruppe existieren (verhindert FOREIGN KEY constraint failed)
+    ensureUserExists(userId);
+    ensureGroupExists(chatId);
+
     const stmt = db.prepare(`
       INSERT INTO scam_events (chat_id, user_id, message_id, score, action, reasons_json, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)

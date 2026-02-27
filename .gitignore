@@ -18,6 +18,11 @@ monitoring/.env
 # Data Volumes (Produktivdaten nie in Git!)
 data/
 
+# Backup-Dateien
+*.backup
+*.bak
+*.bak.*
+
 # IDE
 .idea/
 .vscode/

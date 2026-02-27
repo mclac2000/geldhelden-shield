@@ -67,13 +67,15 @@ import {
   handleSetLocationCommand,
   isAdmin,
 } from './admin';
-import { logAdmin, setBotInstance, unrestrictUserInAllGroups, sendToAdminLogChat, sendJoinLogWithActions, banUserInAllGroups, isUserAdminOrCreatorInGroup, sendEscalationLog, checkImpersonation, sendImpersonationWarning, isBotAdminInGroup, isGroupManaged, isGroupManagedLive } from './telegram';
+import { logAdmin, setBotInstance, unrestrictUserInAllGroups, sendToAdminLogChat, sendJoinLogWithActions, banUserInAllGroups, isUserAdminOrCreatorInGroup, sendEscalationLog, checkImpersonation, sendImpersonationWarning, isBotAdminInGroup, isGroupManaged, isGroupManagedLive, deleteMessage } from './telegram';
 import { ShieldEvent, createJoinEvent, ShieldEventSource, ShieldEventType, logEvent } from './events';
 import { sendWelcomeIfEnabled } from './welcomeNew';
 import { updateGroupProfileFromTitle, getAllowedDomains } from './groupIntelligence';
 import { startAdminSyncScheduler } from './adminSync';
 // TEMPORÄR DEAKTIVIERT: GroupRisk-Features
 // import { evaluateGroupRisk } from './groupRisk';
+import { startMeetupScheduler, handleOnlineMeetupCommand, handleMeetupConfigCommand } from './meetup';
+import { handleChannelPost, handleVideoCallback, handleVideoStatusCommand, handleVideoOpenCommand, handleVideoMineCommand, handleVideoStatsCommand, startVideoTaskScheduler, handleLinkedChatMessage } from './videoTasks';
 
 // Initialisiere Datenbank
 initDatabase();
@@ -82,14 +84,29 @@ initDatabase();
 const bot = new Telegraf(config.botToken);
 setBotInstance(bot);
 
+// DEBUG MIDDLEWARE + Linked Chat Handler
+bot.use(async (ctx, next) => {
+  console.log('UPD:', ctx.updateType);
+  // Pruefe auf Nachrichten aus der verknuepften Diskussionsgruppe
+  if (ctx.updateType === 'message') {
+    const msg = (ctx.update as any).message;
+    // await handleLinkedChatMessage(bot, msg); // DEAKTIVIERT: verhindert doppelte Weiterleitung
+  }
+  return next();
+});
+
 // Initialisiere Welcome-Templates (Default-Templates)
 import('./welcomeTemplates').then(({ initDefaultTemplates }) => {
   initDefaultTemplates();
+}).catch((err) => {
+  console.error('[STARTUP] Fehler bei Welcome-Templates:', err instanceof Error ? err.message : String(err));
 });
 
 // Führe Startup-Migration durch (Profilierung + Admin-Sync)
 import('./migration').then(({ runStartupMigration }) => {
   runStartupMigration(bot);
+}).catch((err) => {
+  console.error('[STARTUP] Fehler bei Migration:', err instanceof Error ? err.message : String(err));
 });
 
 // Letztes Join-Event für /debug last
@@ -389,15 +406,23 @@ async function handleJoinEvent(
         },
         ctx
       );
-      
+
       if (welcomeResult.sent) {
         console.log(`[WELCOME][SENT] user=${userId} chat=${chatId}`);
-      }
-      
-      // DEAKTIVIERT: Group Risk Notifications (READ ONLY - nur Berechnung, keine Notifications)
-      
-      if (welcomeResult.sent) {
-        console.log(`[WELCOME][SENT] user=${userId} chat=${chatId}`);
+
+        // Welcome-Nachricht nach 5 Minuten automatisch löschen
+        if (welcomeResult.messageId) {
+          const WELCOME_DELETE_DELAY = 5 * 60 * 1000; // 5 Minuten
+          setTimeout(async () => {
+            try {
+              await deleteMessage(chatId, welcomeResult.messageId!);
+              console.log(`[WELCOME][DELETED] chat=${chatId} messageId=${welcomeResult.messageId}`);
+            } catch (err: unknown) {
+              const errMsg = err instanceof Error ? err.message : String(err);
+              console.error(`[WELCOME][DELETE_FAIL] chat=${chatId} messageId=${welcomeResult.messageId}`, errMsg);
+            }
+          }, WELCOME_DELETE_DELAY);
+        }
       } else {
         console.log(`[WELCOME][SKIP] reason=${welcomeResult.reason || 'unknown'} user=${userId} chat=${chatId}`);
       }
@@ -519,14 +544,14 @@ async function evaluateRiskIfManaged(
     const hasRecentEscal = hasRecentEscalation(userId, 24);
             if (!hasRecentEscal) {
               const joinCount24h = getJoinCount24h(userId);
-              if (distinctChatsCount > 1) {
-                recordEscalation(userId, 'join', chatId);
-        await sendEscalationLog(ctx, userId, chatId, title, 'join', joinCount24h, userInfo);
-        console.log(`[Escalation] Beobachteter User ${userId} eskaliert: Neue Gruppe ${chatId} (${joinCount24h} Joins in 24h)`);
-      } else if (distinctChatsCount >= 2) {
-        recordEscalation(userId, 'multi_join', chatId);
+              if (distinctChatsCount >= 3) {
+                recordEscalation(userId, 'multi_join', chatId);
         await sendEscalationLog(ctx, userId, chatId, title, 'multi_join', joinCount24h, userInfo);
         console.log(`[Escalation] Beobachteter User ${userId} eskaliert: Mehrfach-Join-Schwellenwert überschritten (${distinctChatsCount} Gruppen, ${joinCount24h} Joins in 24h)`);
+      } else if (distinctChatsCount > 1) {
+        recordEscalation(userId, 'join', chatId);
+        await sendEscalationLog(ctx, userId, chatId, title, 'join', joinCount24h, userInfo);
+        console.log(`[Escalation] Beobachteter User ${userId} eskaliert: Neue Gruppe ${chatId} (${joinCount24h} Joins in 24h)`);
       }
     } else {
       console.log(`[Escalation] Beobachteter User ${userId} hat kürzlich Eskalation - überspringe (Anti-Spam)`);
@@ -843,6 +868,296 @@ bot.command('panic', async (ctx: Context) => {
 });
 
 
+
+// Command: /help oder /menu - Zeigt alle verfuegbaren Befehle
+bot.command(['help', 'menu', 'start'], async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'help', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+    const section = parts[0]?.toLowerCase();
+
+    if (section === 'mod' || section === 'moderation') {
+      await ctx.reply(
+        `\u{1f6ab} <b>Moderation</b>\n\n` +
+        `<code>/ban @username</code> \u2013 User global bannen\n` +
+        `<code>/ban &lt;user_id&gt;</code> \u2013 User per ID bannen\n` +
+        `<code>/unban @username</code> \u2013 User global entbannen\n` +
+        `<code>/allow @username</code> \u2013 User auf Whitelist setzen\n` +
+        `<code>/unrestrict @username</code> \u2013 Einschraenkungen entfernen\n` +
+        `<code>/pardon @username</code> \u2013 Komplett-Begnadigung\n` +
+        `<code>/status @username</code> \u2013 User-Status anzeigen\n\n` +
+        `\u{1f4a1} Alle Commands funktionieren mit <code>@username</code> oder <code>user_id</code>`,
+        { parse_mode: 'HTML' }
+      );
+    } else if (section === 'team') {
+      await ctx.reply(
+        `\u{1f465} <b>Team-Management</b>\n\n` +
+        `<code>/team add @username</code> \u2013 Zum Team hinzufuegen\n` +
+        `<code>/team remove @username</code> \u2013 Aus Team entfernen\n` +
+        `<code>/team list</code> \u2013 Team-Mitglieder anzeigen\n` +
+        `<code>/team import</code> \u2013 Bulk-Import`,
+        { parse_mode: 'HTML' }
+      );
+    } else if (section === 'group' || section === 'gruppen') {
+      await ctx.reply(
+        `\u{1f4ca} <b>Gruppen-Verwaltung</b>\n\n` +
+        `<code>/groups</code> \u2013 Alle verwalteten Gruppen\n` +
+        `<code>/manage</code> \u2013 Gruppe als managed markieren\n` +
+        `<code>/disable</code> \u2013 Gruppe deaktivieren\n` +
+        `<code>/unmanage</code> \u2013 Aus Verwaltung entfernen\n` +
+        `<code>/group status</code> \u2013 Gruppen-Konfiguration\n` +
+        `<code>/groupconfig</code> \u2013 Komplette Konfiguration\n` +
+        `<code>/whereami</code> \u2013 Chat-ID anzeigen`,
+        { parse_mode: 'HTML' }
+      );
+    } else if (section === 'scam') {
+      await ctx.reply(
+        `\u{1f50d} <b>Scam-Erkennung</b>\n\n` +
+        `<code>/scam on</code> / <code>off</code> \u2013 Ein/Ausschalten\n` +
+        `<code>/scam action &lt;ban|restrict|warn&gt;</code> \u2013 Aktion\n` +
+        `<code>/scam threshold &lt;0-100&gt;</code> \u2013 Schwellenwert\n` +
+        `<code>/scamtest &lt;text&gt;</code> \u2013 Text testen`,
+        { parse_mode: 'HTML' }
+      );
+    } else if (section === 'stats' || section === 'statistik') {
+      await ctx.reply(
+        `\u{1f4c8} <b>Statistiken & Diagnose</b>\n\n` +
+        `<code>/stats</code> \u2013 Globale Statistiken\n` +
+        `<code>/stats group</code> \u2013 Gruppen-Statistiken\n` +
+        `<code>/weekly</code> \u2013 Wochenbericht\n` +
+        `<code>/diag</code> \u2013 Diagnose\n` +
+        `<code>/dbcheck</code> \u2013 Datenbank pruefen\n` +
+        `<code>/health</code> \u2013 Health-Check`,
+        { parse_mode: 'HTML' }
+      );
+    } else if (section === 'system' || section === 'config') {
+      await ctx.reply(
+        `\u{2699}\u{fe0f} <b>System & Konfiguration</b>\n\n` +
+        `<code>/shield status</code> \u2013 Bot-Status\n` +
+        `<code>/dryrun</code> \u2013 Dry-Run Modus\n` +
+        `<code>/panic on</code>/<code>off</code> \u2013 Notfall-Modus\n` +
+        `<code>/scan baseline</code> \u2013 Member-Scan\n` +
+        `<code>/setref &lt;code&gt;</code> \u2013 Ref-Code setzen\n` +
+        `<code>/setpartner &lt;type&gt;</code> \u2013 Partner-Typ\n` +
+        `<code>/setlocation &lt;ort&gt;</code> \u2013 Standort`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await ctx.reply(
+        `\u{1f6e1}\u{fe0f} <b>Geldhelden Shield Bot</b>\n` +
+        `\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n` +
+        `<b>\u26a1 Schnellbefehle:</b>\n` +
+        `<code>/ban @username</code> \u2013 User bannen\n` +
+        `<code>/unban @username</code> \u2013 User entbannen\n` +
+        `<code>/status @username</code> \u2013 User-Info\n` +
+        `<code>/allow @username</code> \u2013 User erlauben\n\n` +
+        `\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n` +
+        `<b>\u{1f4d6} Detail-Hilfe nach Kategorie:</b>\n\n` +
+        `<code>/help mod</code> \u2013 \u{1f6ab} Moderation\n` +
+        `<code>/help team</code> \u2013 \u{1f465} Team-Management\n` +
+        `<code>/help group</code> \u2013 \u{1f4ca} Gruppen-Verwaltung\n` +
+        `<code>/help scam</code> \u2013 \u{1f50d} Scam-Erkennung\n` +
+        `<code>/help stats</code> \u2013 \u{1f4c8} Statistiken\n` +
+        `<code>/help system</code> \u2013 \u{2699}\u{fe0f} System\n\n` +
+        `\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n` +
+        `\u{1f916} <i>Geldhelden Shield v1.0</i>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+  });
+});
+
+// Command: /ban <user_id|@username> - Bannt User global in allen managed Groups
+bot.command('ban', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'ban', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+
+    if (parts.length < 1) {
+      await ctx.reply(
+        '\u274c Ungueltige Verwendung.\n\n' +
+        'Format:\n' +
+        '\u2022 /ban @username\n' +
+        '\u2022 /ban <user_id>\n\n' +
+        'Beispiel: /ban @scammer123'
+      );
+      return;
+    }
+
+    await handleBanCommand(ctx, parts[0]);
+  });
+});
+
+// Command: /allow <user_id|@username> - Erlaubt User (Whitelist)
+bot.command('allow', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'allow', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+
+    if (parts.length < 1) {
+      await ctx.reply('\u274c Ungueltige Verwendung. Format: /allow <user_id|@username>');
+      return;
+    }
+
+    await handleAllowCommand(ctx, parts[0]);
+  });
+});
+
+// Command: /status <user_id|@username> - Zeigt User-Status
+bot.command('status', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'status', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+
+    if (parts.length < 1) {
+      await ctx.reply('\u274c Ungueltige Verwendung. Format: /status <user_id|@username>');
+      return;
+    }
+
+    const { handleStatusCommand } = await import('./admin');
+    await handleStatusCommand(ctx, parts[0]);
+  });
+});
+
+// Command: /unrestrict <user_id|@username> - Entfernt Einschraenkungen
+bot.command('unrestrict', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'unrestrict', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+
+    if (parts.length < 1) {
+      await ctx.reply('\u274c Ungueltige Verwendung. Format: /unrestrict <user_id|@username>');
+      return;
+    }
+
+    await handleUnrestrictCommand(ctx, parts[0]);
+  });
+});
+
+// Command: /pardon <user_id|@username> - Begnadigt User
+bot.command('pardon', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'pardon', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+
+    if (parts.length < 1) {
+      await ctx.reply('\u274c Ungueltige Verwendung. Format: /pardon <user_id|@username>');
+      return;
+    }
+
+    await handlePardonCommand(ctx, parts[0]);
+  });
+});
+
+// Command: /groups - Zeigt alle verwalteten Gruppen
+bot.command('groups', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'groups', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+    await handleGroupsCommand(ctx, parts[0]);
+  });
+});
+
+// Command: /manage - Gruppe als managed markieren
+bot.command('manage', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'manage', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+    await handleManageCommand(ctx, parts[0] || '');
+  });
+});
+
+// Command: /disable - Gruppe deaktivieren
+bot.command('disable', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'disable', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+    await handleDisableCommand(ctx, parts[0] || '');
+  });
+});
+
+// Command: /unmanage - Gruppe aus Verwaltung entfernen
+bot.command('unmanage', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'unmanage', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+    await handleUnmanageCommand(ctx, parts[0] || '');
+  });
+});
+
+// Command: /stats - Zeigt Statistiken
+bot.command('stats', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'stats', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+
+    if (parts.length > 0 && parts[0] === 'group') {
+      await handleStatsGroupCommand(ctx, parts[1]);
+    } else {
+      await handleStatsCommand(ctx, parts[0]);
+    }
+  });
+});
+
+// Command: /weekly - Wochenbericht
+bot.command('weekly', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'weekly', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+
+    if (parts[0] === 'last') {
+      await handleWeeklyLastCommand(ctx, parts);
+    } else {
+      await handleWeeklyPreviewCommand(ctx, parts);
+    }
+  });
+});
+
+// Command: /diag - Diagnose
+bot.command('diag', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'diag', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+    await handleDiagCommand(ctx, parts);
+  });
+});
+
+// Command: /dbcheck - Datenbank-Integritaetspruefung
+bot.command('dbcheck', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'dbcheck', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+    await handleDbCheckCommand(ctx, parts);
+  });
+});
+
+// Command: /whereami - Zeigt Chat-ID und Gruppe
+bot.command('whereami', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'whereami', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+    await handleWhereAmICommand(ctx, parts);
+  });
+});
+
+// Command: /myref - Zeigt eigenen Referral-Code
+bot.command('myref', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'myref', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+    await handleMyRefCommand(ctx, parts[0]);
+  });
+});
+
+// Command: /clearref - Loescht Referral-Code
+bot.command('clearref', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'clearref', async (ctx, ...args) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+    await handleClearRefCommand(ctx, parts);
+  });
+});
+
 // Command: /unban <user_id|@username>
 bot.command('unban', async (ctx: Context) => {
   await handleAdminCommand(ctx, 'unban', async (ctx, ...args) => {
@@ -1062,6 +1377,23 @@ bot.command('url', async (ctx: Context) => {
   } else {
     await ctx.reply('❌ Ungültiger Unterbefehl. Verfügbar: mode, allowlist');
   }
+});
+
+// Command: /online_meetup - Zeigt nächsten Online-Meetup Termin
+bot.command('online_meetup', async (ctx: Context) => {
+  try {
+    await handleOnlineMeetupCommand(ctx);
+  } catch (error: any) {
+    console.error('[Error] Fehler beim online_meetup-Command:', error.message);
+  }
+});
+
+// Command: /meetup_config - Admin-Konfiguration für Meetups
+bot.command('meetup_config', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'meetup_config', async (ctx) => {
+    const userIsAdmin = ctx.from ? isAdmin(ctx.from.id) : false;
+    await handleMeetupConfigCommand(ctx, userIsAdmin);
+  });
 });
 
 // Event: Nachrichten (für Baseline-Erfassung + Moderation)
@@ -1297,6 +1629,12 @@ bot.on('callback_query', async (ctx: Context) => {
     
     const data = ctx.callbackQuery.data;
     const queryId = ctx.callbackQuery.id;
+    
+    // Video-Callbacks werden von handleVideoCallback verarbeitet
+    if (data.startsWith('video_')) {
+      await handleVideoCallback(ctx);
+      return;
+    }
     
     // Parse Callback-Data: Format "action:userId:chatId"
     const parts = data.split(':');
@@ -1616,6 +1954,40 @@ async function checkAllGroupsOnStartup(botId: number) {
   }
 }
 
+
+
+// Video-Task Commands
+bot.command('video_status', async (ctx: Context) => {
+  await handleVideoStatusCommand(ctx);
+});
+
+bot.command('video_open', async (ctx: Context) => {
+  await handleVideoOpenCommand(ctx);
+});
+
+bot.command('video_mine', async (ctx: Context) => {
+  await handleVideoMineCommand(ctx);
+});
+
+bot.command('video_stats', async (ctx: Context) => {
+  await handleVideoStatsCommand(ctx);
+});
+
+// Video-Task Callback Handler
+bot.on('callback_query', async (ctx: Context) => {
+  await handleVideoCallback(ctx);
+});
+
+// Channel Post Handler fuer Video-Tasks
+bot.on('channel_post', async (ctx: Context) => {
+  console.log('[DEBUG] channel_post event received');
+  const channelPost = (ctx.update as any).channel_post;
+  if (channelPost) {
+    console.log('[DEBUG] channelPost chat.id:', channelPost.chat?.id);
+    await handleChannelPost(bot, channelPost);
+  }
+});
+
 // Hauptfunktion: Führt Startup-Checks durch und startet Bot
 async function main() {
   try {
@@ -1624,10 +1996,18 @@ async function main() {
     await runStartupChecks(bot);
     console.log('[STARTUP] Startup-Checks erfolgreich abgeschlossen');
     
+    // Starte Meetup-Scheduler für automatische Ankündigungen
+    startMeetupScheduler(bot);
+    console.log('[Startup] Meetup-Scheduler gestartet');
+
+    // Starte Video-Task-Scheduler
+    startVideoTaskScheduler(bot);
+    console.log('[Startup] Video-Task-Scheduler gestartet');
+
     // Starte Bot NACH erfolgreichen Checks
     console.log('[Startup] Starte Bot mit Long Polling...');
     await bot.launch({
-      allowedUpdates: ['message', 'my_chat_member', 'chat_member'],
+      allowedUpdates: ['message', 'my_chat_member', 'chat_member', 'callback_query', 'channel_post'],
     });
     
     console.log('[Startup] ✅ Bot erfolgreich gestartet!');
@@ -1692,6 +2072,8 @@ async function main() {
       timezone: config.timezone || 'Europe/Berlin'
     });
     console.log('[Startup] Baseline-Scan-Job gestartet (monatlich am 1. um 02:00 Uhr)');
+
+
   } catch (error: any) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error('[FATAL] Startup checks failed:', errorMessage);

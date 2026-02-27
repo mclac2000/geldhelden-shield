@@ -173,7 +173,7 @@ export async function sendWelcomeIfEnabled(
   userId: number,
   userInfo: { firstName?: string; lastName?: string; username?: string },
   ctx?: Context
-): Promise<{ sent: boolean; reason?: string }> {
+): Promise<{ sent: boolean; reason?: string; messageId?: number }> {
   try {
     // K12: Prüfe ob User Team-Mitglied ist (niemals Welcome an Team)
     if (isTeamMember(userId)) {
@@ -247,19 +247,19 @@ export async function sendWelcomeIfEnabled(
       // Fallback: Nutze getBotTelegram
       telegram = getBotTelegram();
     }
-    await telegram.sendMessage(chatId, welcomeText, {
+    const sentMsg = await telegram.sendMessage(chatId, welcomeText, {
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
     });
-    
+
     // K12: Markiere Welcome als gesendet (Deduplication)
     markWelcomeSent(chatId, userId);
-    
+
     // Logge (K12: mit Partner und Ort)
     const refStatus = refCode ? 'on' : 'off';
     console.log(`[WELCOME] sent chat=${chatId} user=${userId} partner=${partner} location=${location || 'none'} ref=${refStatus}`);
-    
-    return { sent: true };
+
+    return { sent: true, messageId: sentMsg.message_id };
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`[WELCOME] Fehler beim Senden: chat=${chatId} user=${userId}`, errorMessage);
