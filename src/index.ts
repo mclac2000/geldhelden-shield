@@ -74,7 +74,7 @@ import { updateGroupProfileFromTitle, getAllowedDomains } from './groupIntellige
 import { startAdminSyncScheduler } from './adminSync';
 // TEMPORÄR DEAKTIVIERT: GroupRisk-Features
 // import { evaluateGroupRisk } from './groupRisk';
-import { startMeetupScheduler, handleOnlineMeetupCommand, handleMeetupConfigCommand } from './meetup';
+import { startMeetupScheduler, handleOnlineMeetupCommand, handleMeetupConfigCommand, sendAllMeetupPolls, sendMeetupPoll } from './meetup';
 import { handleChannelPost, handleVideoCallback, handleVideoStatusCommand, handleVideoOpenCommand, handleVideoMineCommand, handleVideoStatsCommand, startVideoTaskScheduler, handleLinkedChatMessage } from './videoTasks';
 
 // Initialisiere Datenbank
@@ -1393,6 +1393,26 @@ bot.command('meetup_config', async (ctx: Context) => {
   await handleAdminCommand(ctx, 'meetup_config', async (ctx) => {
     const userIsAdmin = ctx.from ? isAdmin(ctx.from.id) : false;
     await handleMeetupConfigCommand(ctx, userIsAdmin);
+  });
+});
+
+// Command: /send_meetup_poll [location|all] [force] - Meetup-Umfrage sofort senden
+bot.command('send_meetup_poll', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'send_meetup_poll', async (ctx) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const args = text.split(/\s+/).slice(1);
+    const force = args.includes('force');
+    const locationArg = args.filter(a => a !== 'force').join(' ');
+
+    await ctx.reply('⏳ Sende Meetup-Umfragen...');
+
+    if (!locationArg || locationArg === 'all') {
+      await sendAllMeetupPolls(bot, force);
+      await ctx.reply('✅ Umfragen an alle Meetup-Gruppen gesendet.');
+    } else {
+      const result = await sendMeetupPoll(bot, locationArg, force);
+      await ctx.reply(`✅ Umfrage gesendet: ${result.sent} OK, ${result.failed} Fehler`);
+    }
   });
 });
 

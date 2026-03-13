@@ -72,6 +72,17 @@ export function initMeetupTables(): void {
     )
   `);
 
+  // Erweiterte Tabelle ohne CHECK-Constraint für poll-Typ
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meetup_polls_sent (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      location TEXT NOT NULL,
+      event_date TEXT NOT NULL,
+      sent_at INTEGER NOT NULL,
+      UNIQUE(location, event_date)
+    )
+  `);
+
   console.log('[MEETUP] Tabellen initialisiert');
 }
 
@@ -149,6 +160,31 @@ export function getGroupsForMeetupLocation(location: string): string[] {
 export function removeGroupMeetupLocation(chatId: string): void {
   const db = getDatabase();
   db.prepare(`DELETE FROM meetup_group_mapping WHERE chat_id = ?`).run(chatId);
+}
+
+/**
+ * Prüft ob eine Poll für dieses Event+Datum bereits gesendet wurde
+ */
+function wasPollAlreadySent(location: string, eventDate: Date): boolean {
+  const db = getDatabase();
+  const dateKey = eventDate.toISOString().split('T')[0] + 'T' + eventDate.toISOString().split('T')[1].substring(0, 5);
+  const row = db.prepare(`
+    SELECT id FROM meetup_polls_sent WHERE location = ? AND event_date = ?
+  `).get(location, dateKey);
+  return !!row;
+}
+
+/**
+ * Markiert eine Poll als gesendet
+ */
+function markPollSent(location: string, eventDate: Date): void {
+  const db = getDatabase();
+  const dateKey = eventDate.toISOString().split('T')[0] + 'T' + eventDate.toISOString().split('T')[1].substring(0, 5);
+  db.prepare(`
+    INSERT OR IGNORE INTO meetup_polls_sent (location, event_date, sent_at)
+    VALUES (?, ?, ?)
+  `).run(location, dateKey, Date.now());
+  console.log(`[MEETUP] Poll als gesendet markiert: ${location} ${dateKey}`);
 }
 
 /**
@@ -428,6 +464,79 @@ export async function sendMeetupAnnouncement(
   return { sent, failed };
 }
 
+export async function sendMeetupPoll(
+  bot: Telegraf,
+  location: string,
+  force: boolean = false
+): Promise<{ sent: number; failed: number }> {
+  const event = getMeetupEvent(location);
+  if (!event) {
+    console.warn(`[MEETUP POLL] Kein Event für Standort: ${location}`);
+    return { sent: 0, failed: 0 };
+  }
+
+  const nextDate = getNextMeetupDate(location);
+  if (!nextDate) {
+    console.warn(`[MEETUP POLL] Kein nächster Termin für: ${location}`);
+    return { sent: 0, failed: 0 };
+  }
+
+  if (!force && wasPollAlreadySent(location, nextDate)) {
+    console.log(`[MEETUP POLL] Poll für ${location} bereits gesendet – überspringe`);
+    return { sent: 0, failed: 0 };
+  }
+
+  const groups = getGroupsForMeetupLocation(location);
+  const formattedTime = formatMeetupTime(nextDate, event.timezone);
+
+  let sent = 0;
+  let failed = 0;
+
+  for (const chatId of groups) {
+    try {
+      await bot.telegram.sendPoll(
+        chatId,
+        `🎉 Wer ist heute Abend beim Online-Meetup ${location} dabei?\n⏰ ${formattedTime} – auf wen können wir uns freuen?`,
+        [
+          '✅ Ja, ich bin auf jeden Fall dabei! Ich freue mich! 🙌',
+          '⏰ Ja, ich bin dabei, wenn ich es zeitlich schaffe',
+          '😔 Nein, ich bin leider raus – aber freue mich aufs nächste Mal'
+        ],
+        { is_anonymous: false }
+      );
+      sent++;
+      console.log(`[MEETUP POLL] Poll gesendet: ${location} → ${chatId}`);
+    } catch (error: unknown) {
+      failed++;
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[MEETUP POLL] Fehler bei Poll: ${chatId}`, msg);
+    }
+  }
+
+  if (sent > 0) {
+    markPollSent(location, nextDate);
+  }
+
+  return { sent, failed };
+}
+
+export async function sendAllMeetupPolls(
+  bot: Telegraf,
+  force: boolean = false
+): Promise<void> {
+  const events = getAllMeetupEvents();
+  let totalSent = 0;
+  let totalFailed = 0;
+
+  for (const event of events) {
+    const result = await sendMeetupPoll(bot, event.location, force);
+    totalSent += result.sent;
+    totalFailed += result.failed;
+  }
+
+  console.log(`[MEETUP POLL] Alle Polls gesendet: ${totalSent} OK, ${totalFailed} Fehler`);
+}
+
 // ═══════════════════════════════════════════════════════════
 // BOT COMMAND HANDLERS
 // ═══════════════════════════════════════════════════════════
@@ -700,6 +809,16 @@ async function checkAndSendAnnouncements(bot: Telegraf): Promise<void> {
         console.log(`[MEETUP] 24h-Ankündigung für ${event.location}`);
         await sendMeetupAnnouncement(bot, event.location, false);
         markAnnouncementSent(event.location, nextDate, '24h');
+      }
+    }
+
+    // Poll: 23h vor dem Meetup
+    if (hoursUntil >= 22.5 && hoursUntil <= 23.5) {
+      if (wasPollAlreadySent(event.location, nextDate)) {
+        console.log(`[MEETUP] Poll für ${event.location} bereits gesendet – überspringe`);
+      } else {
+        console.log(`[MEETUP] 23h-Poll für ${event.location}`);
+        await sendMeetupPoll(bot, event.location, false);
       }
     }
 
