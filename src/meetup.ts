@@ -61,6 +61,17 @@ export function initMeetupTables(): void {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meetup_announcements_sent (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      location TEXT NOT NULL,
+      event_date TEXT NOT NULL,
+      announcement_type TEXT NOT NULL CHECK(announcement_type IN ('24h', '1h')),
+      sent_at INTEGER NOT NULL,
+      UNIQUE(location, event_date, announcement_type)
+    )
+  `);
+
   console.log('[MEETUP] Tabellen initialisiert');
 }
 
@@ -138,6 +149,31 @@ export function getGroupsForMeetupLocation(location: string): string[] {
 export function removeGroupMeetupLocation(chatId: string): void {
   const db = getDatabase();
   db.prepare(`DELETE FROM meetup_group_mapping WHERE chat_id = ?`).run(chatId);
+}
+
+/**
+ * Prüft ob eine Ankündigung für dieses Event+Datum+Typ bereits gesendet wurde
+ */
+function wasAnnouncementAlreadySent(location: string, eventDate: Date, type: '24h' | '1h'): boolean {
+  const db = getDatabase();
+  const dateKey = eventDate.toISOString().split('T')[0] + 'T' + eventDate.toISOString().split('T')[1].substring(0, 5);
+  const row = db.prepare(`
+    SELECT id FROM meetup_announcements_sent WHERE location = ? AND event_date = ? AND announcement_type = ?
+  `).get(location, dateKey, type);
+  return !!row;
+}
+
+/**
+ * Markiert eine Ankündigung als gesendet
+ */
+function markAnnouncementSent(location: string, eventDate: Date, type: '24h' | '1h'): void {
+  const db = getDatabase();
+  const dateKey = eventDate.toISOString().split('T')[0] + 'T' + eventDate.toISOString().split('T')[1].substring(0, 5);
+  db.prepare(`
+    INSERT OR IGNORE INTO meetup_announcements_sent (location, event_date, announcement_type, sent_at)
+    VALUES (?, ?, ?, ?)
+  `).run(location, dateKey, type, Date.now());
+  console.log(`[MEETUP] Ankündigung als gesendet markiert: ${location} ${dateKey} ${type}`);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -658,13 +694,23 @@ async function checkAndSendAnnouncements(bot: Telegraf): Promise<void> {
     console.log(`[MEETUP] ${event.location}: Nächstes Event in ${hoursUntil.toFixed(1)}h (${formattedTime} ${event.timezone})`);
 
     if (hoursUntil >= 23.5 && hoursUntil <= 24.5) {
-      console.log(`[MEETUP] 24h-Ankündigung für ${event.location}`);
-      await sendMeetupAnnouncement(bot, event.location, false);
+      if (wasAnnouncementAlreadySent(event.location, nextDate, '24h')) {
+        console.log(`[MEETUP] 24h-Ankündigung für ${event.location} bereits gesendet – überspringe`);
+      } else {
+        console.log(`[MEETUP] 24h-Ankündigung für ${event.location}`);
+        await sendMeetupAnnouncement(bot, event.location, false);
+        markAnnouncementSent(event.location, nextDate, '24h');
+      }
     }
 
     if (hoursUntil >= 0.5 && hoursUntil <= 1.5) {
-      console.log(`[MEETUP] 1h-Erinnerung für ${event.location}`);
-      await sendMeetupAnnouncement(bot, event.location, true);
+      if (wasAnnouncementAlreadySent(event.location, nextDate, '1h')) {
+        console.log(`[MEETUP] 1h-Erinnerung für ${event.location} bereits gesendet – überspringe`);
+      } else {
+        console.log(`[MEETUP] 1h-Erinnerung für ${event.location}`);
+        await sendMeetupAnnouncement(bot, event.location, true);
+        markAnnouncementSent(event.location, nextDate, '1h');
+      }
     }
   }
 }
