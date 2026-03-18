@@ -673,6 +673,27 @@ bot.on('chat_member', async (ctx: Context) => {
           ShieldEventSource.CHAT_MEMBER
         );
     }
+
+    // Cross-Ban: Wenn ein Admin in einer Gruppe jemanden bannt → sofort in ALLEN Gruppen bannen
+    if (newStatus === 'kicked' && oldStatus !== 'kicked') {
+      const bannedUser = (member as any).user;
+      if (bannedUser && !bannedUser.is_bot && !isAdmin(bannedUser.id) && !isTeamMember(bannedUser.id)) {
+        const chatTitle = 'title' in chat ? chat.title : chatId;
+        console.log(`[CROSS-BAN] User ${bannedUser.id} wurde in "${chatTitle}" gebannt → Cross-Ban in alle Gruppen`);
+        const { banUserGlobally } = await import('./telegram');
+        const result = await banUserGlobally(bannedUser.id, `Cross-Ban: Manuell gebannt in "${chatTitle}"`);
+        if (!result.skipped) {
+          await sendToAdminLogChat(
+            `🛡️ <b>Cross-Ban ausgeführt</b>\n\n` +
+            `👤 User: <code>${bannedUser.id}</code> (@${bannedUser.username || '–'})\n` +
+            `📍 Ursprung: <b>${chatTitle}</b>\n` +
+            `✅ In ${result.groups} Gruppen gesperrt`,
+            ctx, true
+          );
+        }
+      }
+    }
+
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error('[ERROR][JOIN_HANDLER] chat_member:', errorMessage);
@@ -985,6 +1006,54 @@ bot.command('ban', async (ctx: Context) => {
     }
 
     await handleBanCommand(ctx, parts[0]);
+  });
+});
+
+// Command: /cleandeleted - Gelöschte Konten sofort aus allen Gruppen entfernen
+bot.command('cleandeleted', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'cleandeleted', async (ctx) => {
+    await ctx.reply('🗑️ Starte Bereinigung gelöschter Konten...');
+    try {
+      const { banUserGlobally } = await import('./telegram');
+      const managedGroups = getManagedGroups();
+      if (managedGroups.length === 0) {
+        await ctx.reply('❌ Keine managed Gruppen gefunden.');
+        return;
+      }
+
+      const userEntries = getUserIdsInManagedGroups(180);
+      const uniqueUserIds = [...new Set(userEntries.map(e => e.user_id))];
+      let checked = 0;
+      let cleaned = 0;
+      const deletedIds: number[] = [];
+
+      for (const userId of uniqueUserIds) {
+        if (isAdmin(userId) || isTeamMember(userId) || isBlacklisted(userId)) continue;
+        try {
+          const memberInfo = await ctx.telegram.getChatMember(managedGroups[0].chatId, userId);
+          checked++;
+          const firstName = (memberInfo.user as any)?.first_name || '';
+          const isDeleted = !firstName.trim() || firstName === 'Deleted Account';
+          if (isDeleted && memberInfo.status === 'member') {
+            await banUserGlobally(userId, 'Gelöschtes Konto – manuelle Bereinigung');
+            deletedIds.push(userId);
+            cleaned++;
+            await new Promise(r => setTimeout(r, 200));
+          }
+        } catch { /* überspringen */ }
+        await new Promise(r => setTimeout(r, 100));
+      }
+
+      await ctx.reply(
+        `✅ <b>Bereinigung abgeschlossen</b>\n\n` +
+        `Geprüft: ${checked}\n` +
+        `Gelöschte Konten entfernt: ${cleaned}` +
+        (deletedIds.length > 0 ? `\nIDs: ${deletedIds.join(', ')}` : ''),
+        { parse_mode: 'HTML' }
+      );
+    } catch (error: any) {
+      await ctx.reply(`❌ Fehler: ${error.message}`);
+    }
   });
 });
 
@@ -1933,10 +2002,65 @@ setInterval(async () => {
 }, CLUSTER_DETECTION_INTERVAL_MS);
 console.log(`[Startup] Cluster-Erkennung gestartet (alle ${CLUSTER_DETECTION_INTERVAL_MS / 1000 / 60} Minuten)`);
 
-// DeletedAccount-AutoRemove wurde entfernt:
-// Telegram liefert keine zuverlässigen Signale für gelöschte Accounts.
-// Die automatische Entfernung basierte auf heuristischen Erkennungen,
-// die zu False Positives führen können.
+// DeletedAccount-AutoRemove: Täglich um 03:00 gelöschte Konten aus allen Gruppen bereinigen
+cron.schedule('0 3 * * *', async () => {
+  console.log('[CRON][DeletedAccounts] Starte Bereinigung gelöschter Konten...');
+  try {
+    const { banUserGlobally } = await import('./telegram');
+    const managedGroups = getManagedGroups();
+    if (managedGroups.length === 0) return;
+
+    // Alle bekannten User-IDs aus managed Gruppen (letzte 180 Tage)
+    const userEntries = getUserIdsInManagedGroups(180);
+    const uniqueUserIds = [...new Set(userEntries.map(e => e.user_id))];
+
+    let checked = 0;
+    let cleaned = 0;
+    const deletedIds: number[] = [];
+
+    for (const userId of uniqueUserIds) {
+      if (isAdmin(userId) || isTeamMember(userId) || isBlacklisted(userId)) continue;
+
+      try {
+        const chatId = managedGroups[0].chatId;
+        const memberInfo = await bot.telegram.getChatMember(chatId, userId);
+        checked++;
+
+        // Gelöschte Konten haben leeren first_name oder "Deleted Account"
+        const firstName = (memberInfo.user as any)?.first_name || '';
+        const isDeleted = !firstName.trim() || firstName === 'Deleted Account';
+
+        if (isDeleted && memberInfo.status === 'member') {
+          console.log(`[CRON][DeletedAccounts] Gelöschtes Konto gefunden: ${userId} → Ban`);
+          await banUserGlobally(userId, 'Gelöschtes Konto – automatische Bereinigung');
+          deletedIds.push(userId);
+          cleaned++;
+          await new Promise(r => setTimeout(r, 200)); // Rate-Limit
+        }
+      } catch {
+        // User nicht in Gruppe oder API-Fehler → überspringen
+      }
+      await new Promise(r => setTimeout(r, 100)); // Rate-Limit
+    }
+
+    console.log(`[CRON][DeletedAccounts] Fertig: ${checked} geprüft, ${cleaned} bereinigt`);
+    if (cleaned > 0) {
+      const ctx = { telegram: bot.telegram } as Context;
+      await sendToAdminLogChat(
+        `🗑️ <b>Nacht-Bereinigung: Gelöschte Konten</b>\n\n` +
+        `✅ ${checked} User geprüft\n` +
+        `🗑️ ${cleaned} gelöschte Konten entfernt\n` +
+        `IDs: ${deletedIds.map(id => `<code>${id}</code>`).join(', ')}`,
+        ctx, true
+      );
+    }
+  } catch (error: any) {
+    console.error('[CRON][DeletedAccounts] Fehler:', error.message);
+  }
+}, { timezone: 'Europe/Berlin' });
+console.log('[Startup] DeletedAccount-Bereinigung gestartet (täglich 03:00 Berlin)');
+
+// Manueller Befehl /cleandeleted für sofortige Bereinigung (bereits in admin.ts registriert falls vorhanden)
 
 // Startup Self-Check Log (PFLICHT - muss IMMER erscheinen)
 async function sendStartupLog(): Promise<void> {
