@@ -496,7 +496,7 @@ export async function sendMeetupPoll(
     try {
       await bot.telegram.sendPoll(
         chatId,
-        `🎉 Wer ist heute Abend beim Online-Meetup ${location} dabei?\n⏰ ${formattedTime} – auf wen können wir uns freuen?`,
+        `🎉 Wer ist diesmal beim Online-Meetup ${location} dabei?\n⏰ ${formattedTime} – auf wen können wir uns freuen?`,
         [
           '✅ Ja, ich bin auf jeden Fall dabei! Ich freue mich! 🙌',
           '⏰ Ja, ich bin dabei, wenn ich es zeitlich schaffe',
