@@ -35,7 +35,7 @@ interface ScamContext {
 }
 
 // Scam Patterns mit neuen Gewichtungen (HIGH=10, MED=6, LOW=3)
-const HIGH_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: string }> = [
+const HIGH_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: string; jobSpam?: boolean }> = [
   // Account/Verification Scams (HIGH)
   { pattern: /konto\s+(eingeschränkt|gesperrt|blockiert)/i, weight: 10, reason: 'account_restriction_scam' },
   { pattern: /account\s+(restricted|suspended|blocked|locked)/i, weight: 10, reason: 'account_restriction_scam' },
@@ -44,20 +44,40 @@ const HIGH_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: string
   { pattern: /verify\s+now/i, weight: 10, reason: 'verify_now_scam' },
   { pattern: /dringend\s+bestätigen/i, weight: 10, reason: 'urgent_verify_scam' },
   { pattern: /security\s+alert/i, weight: 10, reason: 'security_alert_scam' },
-  
+
   // Support Scams (HIGH)
   { pattern: /support/i, weight: 10, reason: 'support_scam' },
   { pattern: /official\s+support/i, weight: 10, reason: 'official_support_scam' },
   { pattern: /telegram\s+support/i, weight: 10, reason: 'telegram_support_scam' },
   { pattern: /kontakt\s+admin/i, weight: 10, reason: 'contact_admin_scam' },
   { pattern: /admin\s+kontaktieren/i, weight: 10, reason: 'contact_admin_scam' },
-  
+
   // Private Message Requests (HIGH)
   { pattern: /write\s+me\s+privately/i, weight: 10, reason: 'pm_request' },
   { pattern: /schreib\s+mir\s+privat/i, weight: 10, reason: 'pm_request' },
+
+  // Job Spam: Contact redirect to external Telegram account (HIGH)
+  // Erkennt: "Contact 👉 @Anna_Lour", "Kontakt → @user", "write to 👉 @user", etc.
+  // Unicode-Varianten: 👉 ➡️ → >> > — alle Pfeile/Emojis die auf @username zeigen
+  { pattern: /contact\s*[👉➡️→>]+\s*@\w+/iu, weight: 10, reason: 'job_spam_contact_redirect', jobSpam: true },
+  { pattern: /kontakt\s*[👉➡️→>]+\s*@\w+/iu, weight: 10, reason: 'job_spam_contact_redirect', jobSpam: true },
+  { pattern: /write\s+(?:to\s+)?[👉➡️→>]+\s*@\w+/iu, weight: 10, reason: 'job_spam_contact_redirect', jobSpam: true },
+  { pattern: /schreib\s+(?:an?\s+)?[👉➡️→>]+\s*@\w+/iu, weight: 10, reason: 'job_spam_contact_redirect', jobSpam: true },
+  // "Contact @username" ohne Pfeil aber mit "contact" direkt vor @mention
+  { pattern: /\bcontact\b[^\n@]{0,20}@\w{4,}/i, weight: 10, reason: 'job_spam_contact_redirect', jobSpam: true },
+
+  // Job Spam: Einkommensversprechen mit Währung + Zeitraum (HIGH)
+  // Erkennt: "€1,600 per week", "$2000 per month", "1.600 EUR pro Woche", etc.
+  // Varianten: €/$, Komma vs Punkt als Tausender-Trennzeichen, em-dash davor
+  { pattern: /[€$£₽]\s*[\d][,.\d]*\s*(?:per|pro)\s*(?:week|woche|month|monat)/iu, weight: 10, reason: 'job_spam_income_claim', jobSpam: true },
+  { pattern: /[\d][,.\d]*\s*[€$£₽]\s*(?:per|pro)\s*(?:week|woche|month|monat)/iu, weight: 10, reason: 'job_spam_income_claim', jobSpam: true },
+  { pattern: /[\d][,.\d]*\s*(?:eur|usd|dollar|euro)\s*(?:per|pro)\s*(?:week|woche|month|monat)/iu, weight: 10, reason: 'job_spam_income_claim', jobSpam: true },
+  // "income — €1,600 per week" (mit em-dash, en-dash oder Strich dazwischen)
+  { pattern: /income\s*[—–-]\s*[€$£₽]?\s*[\d]/iu, weight: 10, reason: 'job_spam_income_claim', jobSpam: true },
+  { pattern: /einkommen\s*[—–-]\s*[€$£₽]?\s*[\d]/iu, weight: 10, reason: 'job_spam_income_claim', jobSpam: true },
 ];
 
-const MEDIUM_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: string }> = [
+const MEDIUM_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: string; jobSpam?: boolean }> = [
   // Reward/Scam Promises (MED)
   { pattern: /bonus\s+code/i, weight: 6, reason: 'bonus_code_scam' },
   { pattern: /airdrop/i, weight: 6, reason: 'airdrop_scam' },
@@ -65,12 +85,50 @@ const MEDIUM_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: stri
   { pattern: /claim/i, weight: 6, reason: 'claim_scam' },
   { pattern: /reward/i, weight: 6, reason: 'reward_scam' },
   { pattern: /belohnung\s+wartet/i, weight: 6, reason: 'reward_scam' },
-  
+
   // Investment Scams (MED)
   { pattern: /investiere\s+jetzt/i, weight: 6, reason: 'investment_scam' },
   { pattern: /100%\s+profit/i, weight: 6, reason: 'guaranteed_profit_scam' },
   { pattern: /verdiene\s+geld\s+schnell/i, weight: 6, reason: 'quick_money_scam' },
   { pattern: /geschäftsmöglichkeit/i, weight: 6, reason: 'business_opportunity_scam' },
+
+  // Job Spam: Recruiting-Formulierungen (MED)
+  // "seeking 1–3 individuals", "looking for 2-5 people", "suche 1 bis 3 Personen"
+  // Varianten: em-dash (—), en-dash (–), Bindestrich, Leerzeichen zwischen Zahlen
+  { pattern: /seeking\s+\d+\s*[–—\-~to bis]*\s*\d*\s+individuals?/iu, weight: 6, reason: 'job_spam_seeking', jobSpam: true },
+  { pattern: /looking\s+for\s+\d+\s*[–—\-~to]*\s*\d*\s+(?:individuals?|persons?|people)/iu, weight: 6, reason: 'job_spam_seeking', jobSpam: true },
+  { pattern: /suche\s+\d+\s*(?:bis\s*\d+\s*)?(?:personen?|mitarbeiter|leute)/iu, weight: 6, reason: 'job_spam_seeking', jobSpam: true },
+  { pattern: /wir\s+suchen\s+\d+\s*(?:bis\s*\d+\s*)?(?:personen?|mitarbeiter|leute)/iu, weight: 6, reason: 'job_spam_seeking', jobSpam: true },
+
+  // Job Spam: Remote Opportunity (MED)
+  { pattern: /remote\s+opportunity/iu, weight: 6, reason: 'job_spam_remote', jobSpam: true },
+  { pattern: /remote[\s-]+(?:m[öo]glichkeit|chance|stelle|job|arbeit|t[äa]tigkeit|position)/iu, weight: 6, reason: 'job_spam_remote', jobSpam: true },
+  { pattern: /heimarbeit|home[\s-]?office[\s-]?job/iu, weight: 6, reason: 'job_spam_remote', jobSpam: true },
+
+  // Job Spam: Smartphone zugänglich (MED)
+  // "Accessible via smartphone", "vom Handy aus", "per Smartphone erreichbar"
+  { pattern: /accessible\s+via\s+smartphone/iu, weight: 6, reason: 'job_spam_smartphone', jobSpam: true },
+  { pattern: /vom\s+handy\s+aus/iu, weight: 6, reason: 'job_spam_smartphone', jobSpam: true },
+  { pattern: /per\s+(?:smartphone|handy|telefon)\s+(?:erreichbar|bedienbar|machbar|möglich)/iu, weight: 6, reason: 'job_spam_smartphone', jobSpam: true },
+  { pattern: /nur\s+(?:ein\s+)?smartphone\s+(?:ben[öo]tigt|erforderlich|nötig|reicht)/iu, weight: 6, reason: 'job_spam_smartphone', jobSpam: true },
+
+  // Job Spam: Potential income / Potenzielles Einkommen (MED)
+  { pattern: /potential\s+(?:income|earnings?|verdienst)/iu, weight: 6, reason: 'job_spam_income', jobSpam: true },
+  { pattern: /potenziell(?:es?|e)?\s+(?:einkommen|verdienst|einnahmen)/iu, weight: 6, reason: 'job_spam_income', jobSpam: true },
+  { pattern: /verdienst(?:m[öo]glichkeit)?.*?(?:woche|monat|week|month)/iu, weight: 6, reason: 'job_spam_income', jobSpam: true },
+  { pattern: /nebenverdienst|nebeneinkommen/iu, weight: 6, reason: 'job_spam_side_income', jobSpam: true },
+
+  // Job Spam: Work from home (MED)
+  { pattern: /work\s+from\s+home/iu, weight: 6, reason: 'job_spam_wfh', jobSpam: true },
+  { pattern: /von\s+zu\s+hause\s+(?:aus\s+)?(?:arbeiten|verdienen|geld\s+verdienen)/iu, weight: 6, reason: 'job_spam_wfh', jobSpam: true },
+
+  // Job Spam: Flexible hours (MED, nur in Kombination aussagekräftig)
+  { pattern: /flexible\s+(?:hours?|arbeitszeiten|zeiten|schedule)/iu, weight: 6, reason: 'job_spam_flexible', jobSpam: true },
+  { pattern: /freie\s+(?:zeiteinteilung|arbeitszeiten)/iu, weight: 6, reason: 'job_spam_flexible', jobSpam: true },
+
+  // Job Spam: Einladung zu DM / Weiterverweis (MED)
+  { pattern: /dm\s+(?:me|uns|mich)\s+(?:for|f[üu]r|f[üu]r\s+mehr)/iu, weight: 6, reason: 'job_spam_dm_redirect', jobSpam: true },
+  { pattern: /(?:mehr\s+)?infos?\s+per\s+(?:dm|privat|nachricht)/iu, weight: 6, reason: 'job_spam_dm_redirect', jobSpam: true },
 ];
 
 const LOW_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: string }> = [
@@ -80,6 +138,13 @@ const LOW_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: string 
   { pattern: /cloud\s+mining/i, weight: 3, reason: 'mining_scam' },
   { pattern: /pump\s+and\s+dump/i, weight: 3, reason: 'pump_dump_scam' },
 ];
+
+// Alle Job-Spam-Reasons für Combo-Detektion
+const JOB_SPAM_REASONS = new Set([
+  'job_spam_contact_redirect', 'job_spam_income_claim', 'job_spam_seeking',
+  'job_spam_remote', 'job_spam_smartphone', 'job_spam_income',
+  'job_spam_side_income', 'job_spam_wfh', 'job_spam_flexible', 'job_spam_dm_redirect',
+]);
 
 // URL Shorteners
 const URL_SHORTENERS = ['bit.ly', 'tinyurl.com', 'cutt.ly', 'short.link', 't.co', 'goo.gl', 'ow.ly', 'is.gd'];
@@ -117,8 +182,26 @@ export function normalizeText(input: string): string {
   text = text.replace(/[е]/g, 'e'); // Cyrillic 'е' -> Latin 'e'
   text = text.replace(/[о]/g, 'o'); // Cyrillic 'о' -> Latin 'o'
   text = text.replace(/[р]/g, 'p'); // Cyrillic 'р' -> Latin 'p'
-  
+
+  // Weitere Homoglyphen für Job-Spam-Umgehungsversuche
+  text = text.replace(/[с]/g, 'c'); // Cyrillic 'с' -> Latin 'c'
+  text = text.replace(/[і]/g, 'i'); // Cyrillic 'і' -> Latin 'i'
+  text = text.replace(/[у]/g, 'y'); // Cyrillic 'у' -> Latin 'y'
+
+  // Unicode-Tricks: em-dash, en-dash → Bindestrich (für Muster wie "1–3 Personen")
+  text = text.replace(/[—–]/g, '-');
+
+  // Fancy Unicode-Zahlen → ASCII (fullwidth digits)
+  text = text.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+
   return text;
+}
+
+/**
+ * Zählt wie viele einzigartige Job-Spam-Pattern-Reasons gematchten
+ */
+function countJobSpamHits(reasons: string[]): number {
+  return reasons.filter(r => JOB_SPAM_REASONS.has(r)).length;
 }
 
 /**
@@ -310,7 +393,15 @@ export function scoreScam(
       reasons.push('forwarded_suspicious');
     }
   }
-  
+
+  // Job-Spam Combo-Bonus: Bei ≥2 verschiedenen Job-Spam-Patterns → +25 (Threshold-Überschreitung)
+  // Hintergrund: Eine Einzelphrase reicht nicht → aber das Zusammenspiel ist eindeutig Spam
+  const jobSpamHits = countJobSpamHits([...new Set(reasons)]);
+  if (jobSpamHits >= 2) {
+    score += 25;
+    reasons.push('job_spam_combo');
+  }
+
   // Severity Mapping
   let severity: 'LOW' | 'MEDIUM' | 'HIGH';
   if (score >= 18) {
@@ -457,14 +548,40 @@ export function evaluateScam(context: ScamContext): ScamResult {
     reasons.push('excessive_uppercase_with_link');
   }
   
-  // D) Mentions
+  // D) Mentions (verdächtige System-Accounts)
   for (const mention of SUSPICIOUS_MENTIONS) {
     if (fullText.includes(mention.toLowerCase())) {
       score += 15;
       reasons.push('suspicious_mention');
     }
   }
-  
+
+  // E) Mention-Entity-Detektor für Job-Spam:
+  // Wenn die Nachricht eine @mention-Entity enthält (d.h. Link zu externem User)
+  // UND bereits Job-Spam-Patterns gematcht haben → starker Hinweis auf Kontakt-Redirect
+  if (entities) {
+    const hasMentionEntity = entities.some(e => e.type === 'mention');
+    if (hasMentionEntity) {
+      const jobSpamHitsBeforeMention = reasons.filter(r => JOB_SPAM_REASONS.has(r)).length;
+      if (jobSpamHitsBeforeMention >= 1) {
+        // @mention + Job-Spam-Kontext = sehr starkes Signal
+        score += 20;
+        reasons.push('job_spam_mention_redirect');
+      } else {
+        // @mention allein: kleiner Bonus wenn kein offensichtlicher Job-Spam-Kontext
+        score += 5;
+        reasons.push('external_mention');
+      }
+    }
+  }
+
+  // F) Job-Spam Combo-Bonus: bei ≥2 verschiedenen Job-Spam-Reasons → +25
+  const jobSpamHits = countJobSpamHits([...new Set(reasons)]);
+  if (jobSpamHits >= 2) {
+    score += 25;
+    reasons.push('job_spam_combo');
+  }
+
   // Score begrenzen auf 0-100
   score = Math.max(0, Math.min(100, score));
   
