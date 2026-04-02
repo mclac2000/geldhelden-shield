@@ -75,6 +75,13 @@ const HIGH_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: string
   // "income — €1,600 per week" (mit em-dash, en-dash oder Strich dazwischen)
   { pattern: /income\s*[—–-]\s*[€$£₽]?\s*[\d]/iu, weight: 10, reason: 'job_spam_income_claim', jobSpam: true },
   { pattern: /einkommen\s*[—–-]\s*[€$£₽]?\s*[\d]/iu, weight: 10, reason: 'job_spam_income_claim', jobSpam: true },
+
+  // Job Spam: "Write + to @user" — typisches MLM/Recruiting-Spam-Muster (HIGH)
+  // Erkennt: 'Write "+" to @user', 'write + to - @ MateoG7', 'Schreib + an @user'
+  { pattern: /write\s+["']?\+["']?\s+(?:to\s+)?[^@\n]{0,20}@\s*\w+/iu, weight: 10, reason: 'job_spam_write_plus_redirect', jobSpam: true },
+  { pattern: /schreib(?:e)?\s+["']?\+["']?\s+(?:an?\s+)?[^@\n]{0,20}@\s*\w+/iu, weight: 10, reason: 'job_spam_write_plus_redirect', jobSpam: true },
+  // "Send/message + to @user"
+  { pattern: /(?:send|message)\s+["']?\+["']?\s+(?:to\s+)?[^@\n]{0,20}@\s*\w+/iu, weight: 10, reason: 'job_spam_write_plus_redirect', jobSpam: true },
 ];
 
 const MEDIUM_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: string; jobSpam?: boolean }> = [
@@ -99,10 +106,17 @@ const MEDIUM_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: stri
   { pattern: /looking\s+for\s+\d+\s*[–—\-~to]*\s*\d*\s+(?:individuals?|persons?|people)/iu, weight: 6, reason: 'job_spam_seeking', jobSpam: true },
   { pattern: /suche\s+\d+\s*(?:bis\s*\d+\s*)?(?:personen?|mitarbeiter|leute)/iu, weight: 6, reason: 'job_spam_seeking', jobSpam: true },
   { pattern: /wir\s+suchen\s+\d+\s*(?:bis\s*\d+\s*)?(?:personen?|mitarbeiter|leute)/iu, weight: 6, reason: 'job_spam_seeking', jobSpam: true },
+  // "looking for people to join" (ohne Zahlenangabe — typisch für MLM/Scam-Recruiting)
+  { pattern: /looking\s+for\s+(?:\w+\s+){0,4}(?:people|persons?|individuals?|members?|candidates?)\s+to\s+join/iu, weight: 6, reason: 'job_spam_seeking', jobSpam: true },
+  { pattern: /seeking\s+(?:\w+\s+){0,4}(?:people|persons?|individuals?|members?)\s+(?:to\s+join|who\s+want\s+to)/iu, weight: 6, reason: 'job_spam_seeking', jobSpam: true },
+  // "responsible/reliable/motivated people" als Recruiting-Signal
+  { pattern: /(?:responsible|reliable|motivated|dedicated|trustworthy)\s+(?:people|persons?|individuals?|members?|candidates?)/iu, weight: 6, reason: 'job_spam_responsible_people', jobSpam: true },
+  { pattern: /(?:verantwortungsvolle?|zuverl[äa]ssige?|motivierte?)\s+(?:personen?|mitarbeiter|leute|kandidaten?)/iu, weight: 6, reason: 'job_spam_responsible_people', jobSpam: true },
 
   // Job Spam: Remote Opportunity (MED)
   { pattern: /remote\s+opportunity/iu, weight: 6, reason: 'job_spam_remote', jobSpam: true },
-  { pattern: /remote[\s-]+(?:m[öo]glichkeit|chance|stelle|job|arbeit|t[äa]tigkeit|position)/iu, weight: 6, reason: 'job_spam_remote', jobSpam: true },
+  { pattern: /remote[\s-]+(?:m[öo]glichkeit|chance|stelle|job|arbeit|t[äa]tigkeit|position|activity|activities)/iu, weight: 6, reason: 'job_spam_remote', jobSpam: true },
+  { pattern: /\bremote\s+activity\b/iu, weight: 6, reason: 'job_spam_remote', jobSpam: true },
   { pattern: /heimarbeit|home[\s-]?office[\s-]?job/iu, weight: 6, reason: 'job_spam_remote', jobSpam: true },
 
   // Job Spam: Smartphone zugänglich (MED)
@@ -129,6 +143,26 @@ const MEDIUM_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: stri
   // Job Spam: Einladung zu DM / Weiterverweis (MED)
   { pattern: /dm\s+(?:me|uns|mich)\s+(?:for|f[üu]r|f[üu]r\s+mehr)/iu, weight: 6, reason: 'job_spam_dm_redirect', jobSpam: true },
   { pattern: /(?:mehr\s+)?infos?\s+per\s+(?:dm|privat|nachricht)/iu, weight: 6, reason: 'job_spam_dm_redirect', jobSpam: true },
+
+  // Job Spam: "join the/our team" (MED)
+  { pattern: /(?:to\s+)?join\s+(?:the|our)\s+team/iu, weight: 6, reason: 'job_spam_join_team', jobSpam: true },
+  { pattern: /(?:unserem?|dem)\s+team\s+beitreten/iu, weight: 6, reason: 'job_spam_join_team', jobSpam: true },
+
+  // Job Spam: "No prior experience required" (MED)
+  { pattern: /no\s+(?:prior\s+)?experience\s+(?:required|needed|necessary)/iu, weight: 6, reason: 'job_spam_no_experience', jobSpam: true },
+  { pattern: /(?:require[sd]?\s+)?no\s+(?:prior\s+)?experience\s+to\s+(?:get\s+started|start)/iu, weight: 6, reason: 'job_spam_no_experience', jobSpam: true },
+  { pattern: /without\s+(?:any\s+)?(?:prior\s+)?experience/iu, weight: 6, reason: 'job_spam_no_experience', jobSpam: true },
+  { pattern: /keine\s+(?:vorherige\s+|prior\s+)?erfahrung\s+(?:n[öo]tig|erforderlich|ben[öo]tigt|notwendig)/iu, weight: 6, reason: 'job_spam_no_experience', jobSpam: true },
+  { pattern: /erfahrung\s+(?:ist\s+)?(?:nicht\s+)?(?:notwendig|erforderlich|n[öo]tig)/iu, weight: 6, reason: 'job_spam_no_experience', jobSpam: true },
+
+  // Job Spam: "X–Y hours a day" — Versprechen geringer Arbeitszeit (MED)
+  { pattern: /\d+\s*[-–—]\s*\d+\s+hours?\s+(?:a\s+|per\s+)?day/iu, weight: 6, reason: 'job_spam_hours_per_day', jobSpam: true },
+  { pattern: /\d+\s+stunden?\s+(?:am|pro)\s+tag/iu, weight: 6, reason: 'job_spam_hours_per_day', jobSpam: true },
+  { pattern: /only\s+\d+\s*[-–—]?\s*\d*\s+hours?\s+(?:a\s+|per\s+)?day/iu, weight: 6, reason: 'job_spam_hours_per_day', jobSpam: true },
+
+  // Job Spam: "legal methods" — typisch für MLM-Schein-Legitimierung (MED)
+  { pattern: /legal\s+methods?\s+(?:that|to|for|which|we)/iu, weight: 6, reason: 'job_spam_legal_methods', jobSpam: true },
+  { pattern: /legale\s+methoden?\s+(?:die|f[üu]r|welche)/iu, weight: 6, reason: 'job_spam_legal_methods', jobSpam: true },
 ];
 
 const LOW_RISK_PHRASES: Array<{ pattern: RegExp; weight: number; reason: string }> = [
@@ -144,6 +178,9 @@ const JOB_SPAM_REASONS = new Set([
   'job_spam_contact_redirect', 'job_spam_income_claim', 'job_spam_seeking',
   'job_spam_remote', 'job_spam_smartphone', 'job_spam_income',
   'job_spam_side_income', 'job_spam_wfh', 'job_spam_flexible', 'job_spam_dm_redirect',
+  // Neue MLM/Recruiting-Patterns
+  'job_spam_write_plus_redirect', 'job_spam_responsible_people', 'job_spam_join_team',
+  'job_spam_no_experience', 'job_spam_hours_per_day', 'job_spam_legal_methods',
 ]);
 
 // URL Shorteners
@@ -540,6 +577,13 @@ export function evaluateScam(context: ScamContext): ScamResult {
   if (emojiCount >= 3 && hasUrl) {
     score += 10;
     reasons.push('excessive_emojis_with_link');
+  }
+
+  // Viele Emojis + Job-Spam-Kontext (auch ohne URL — typisch für MLM/Recruiting-Spam)
+  const jobSpamHitsForEmoji = reasons.filter(r => JOB_SPAM_REASONS.has(r)).length;
+  if (emojiCount >= 3 && jobSpamHitsForEmoji >= 1) {
+    score += 6;
+    reasons.push('emoji_spam_with_job_keywords');
   }
   
   // UPPERCASE + Link
