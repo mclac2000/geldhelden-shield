@@ -386,18 +386,21 @@ export function generateAnnouncementText(event: MeetupEvent, nextDate: Date): st
   const formattedDate = formatMeetupDate(nextDate, event.timezone);
   const formattedTime = formatMeetupTime(nextDate, event.timezone);
 
-  return `📅 **Online-Meetup ${event.location}**
+  return `📅 **Gemeinsames Online-Meetup – morgen Abend!**
 
 📆 ${formattedDate}
 
-Morgen ist es soweit! Triff andere Geldhelden aus deiner Region beim virtuellen Networking.
+Morgen findet wieder unser **gemeinsames Online-Meetup** statt – für alle Geldhelden aus Deutschland, Österreich, der Schweiz und der ganzen Welt! 🌍
 
-👉 **Teilnehmen:**
+💡 **Warum ein gemeinsamer Raum für alle?**
+In einzelnen Städten kamen bisher oft zu wenige Teilnehmer zusammen, damit ein echtes Netzwerk-Feeling entstehen konnte. Deshalb haben wir umgestellt: Ab jetzt treffen sich alle Geldhelden-Gruppen gemeinsam in EINEM virtuellen Raum – mehr Menschen, mehr Austausch, mehr Energie!
+
+👉 **Dein Meetup-Link (für alle Gruppen gleich):**
 ${event.remo_link}
 
-⏰ Nicht vergessen: Morgen um ${formattedTime}!
+⏰ Morgen um ${formattedTime} – trag dir's gleich ein!
 
-💡 Tipp: Der Link ist permanent gültig - speichere ihn für zukünftige Events!
+💡 Tipp: Der Link ist dauerhaft gültig – speichere ihn für alle zukünftigen Meetups!
 
 _Automatische Ankündigung vom Geldhelden Shield Bot_`;
 }
@@ -405,11 +408,11 @@ _Automatische Ankündigung vom Geldhelden Shield Bot_`;
 export function generateReminderText(event: MeetupEvent, nextDate: Date): string {
   const formattedTime = formatMeetupTime(nextDate, event.timezone);
 
-  return `🔔 **Erinnerung: Online-Meetup ${event.location}**
+  return `🔔 **Erinnerung: Gemeinsames Online-Meetup – startet gleich!**
 
 ⏰ **In einer Stunde geht's los!** (${formattedTime})
 
-Mach dich bereit für das virtuelle Networking mit anderen Geldhelden!
+Heute Abend treffen sich Geldhelden aus der gesamten Community in unserem gemeinsamen virtuellen Raum. Vernetz dich, tausch dich aus, sei Teil der Gemeinschaft – egal aus welcher Stadt du bist! 🌍
 
 👉 **Jetzt beitreten:**
 ${event.remo_link}
@@ -496,11 +499,11 @@ export async function sendMeetupPoll(
     try {
       await bot.telegram.sendPoll(
         chatId,
-        `🎉 Wer ist diesmal beim Online-Meetup ${location} dabei?\n⏰ ${formattedTime} – auf wen können wir uns freuen?`,
+        `🎉 Wer ist beim nächsten gemeinsamen Online-Meetup (alle Geldhelden-Gruppen!) dabei?\n⏰ ${formattedTime} – auf wen können wir uns freuen?`,
         [
-          '✅ Ja, ich bin auf jeden Fall dabei! Ich freue mich! 🙌',
-          '⏰ Ja, ich bin dabei, wenn ich es zeitlich schaffe',
-          '😔 Nein, ich bin leider raus – aber freue mich aufs nächste Mal'
+          '✅ Ja, ich bin auf jeden Fall dabei! 🙌',
+          '⏰ Ja, wenn ich es zeitlich schaffe',
+          '😔 Nein, aber ich freue mich aufs nächste Mal'
         ],
         { is_anonymous: false }
       );
@@ -571,17 +574,16 @@ Admins können mit \`/meetup_config\` einen Standort zuweisen.`);
 
   const formattedDate = formatMeetupDate(nextDate, event.timezone);
 
-  await ctx.reply(`📅 **Online-Meetup ${location}**
+  await ctx.reply(`📅 **Gemeinsames Online-Meetup – nächster Termin**
 
-📆 Nächster Termin:
-${formattedDate}
+📆 ${formattedDate}
 
 🌍 Zeitzone: ${event.timezone}
 
-👉 **Teilnahme-Link:**
+👉 **Teilnahme-Link (für alle Geldhelden-Gruppen):**
 ${event.remo_link}
 
-Wir freuen uns auf dich! 🎉`, {
+Alle Städte, ein Raum – wir freuen uns auf dich! 🎉`, {
     parse_mode: 'Markdown',
     link_preview_options: { is_disabled: false }
   });
