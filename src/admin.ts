@@ -177,9 +177,10 @@ export async function handleBanCommand(ctx: Context, userIdStr?: string): Promis
     }
   }
 
-  // Prüfe ob es ein Username-Ban ist (@username)
-  if (!userId && userIdStr && userIdStr.startsWith('@')) {
-    const username = userIdStr.replace('@', '').trim();
+  // Prüfe ob es ein Username-Ban ist (@username oder plain username)
+  // Auch ohne @ behandeln, wenn es keine Zahl ist
+  if (!userId && userIdStr && (userIdStr.startsWith('@') || (userIdStr.trim().length > 0 && isNaN(parseInt(userIdStr, 10))))) {
+    const username = userIdStr.replace(/^@/, '').trim();
     if (username) {
       // Username-Ban für unbekannte User
       const { addUsernameToBlacklist, getUsersByUsername, getOrCreateUser } = await import('./db');
