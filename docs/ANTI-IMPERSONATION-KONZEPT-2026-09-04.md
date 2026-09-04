@@ -2,7 +2,22 @@
 
 **Stand:** 04.09.2026
 **Anlass:** Wiederkehrender zweistufiger Angriff — Kopie von Marcos Account + Strohmänner, die in eine Fake-Gruppe einladen
-**Status:** Befund + Plan. Es wurde **nichts** in Produktion verändert. Alle Server-Zugriffe waren lesend.
+**Status dieses Dokuments:** Befund + Plan, Stand **vor** der Umsetzung. Die Analyse-Zugriffe auf den Server waren lesend.
+
+> **Nachtrag vom selben Tag:** Stufe 0 und die wesentlichen Teile von Stufe 1 sind
+> inzwischen umgesetzt und ausgerollt. Umsetzungsbericht mit Messergebnissen, offenen
+> Punkten und dem **Urteil zu Stufe 2 (Empfehlung: nicht bauen)**:
+> [`UMSETZUNG-STUFE-0-2026-09-04.md`](./UMSETZUNG-STUFE-0-2026-09-04.md)
+>
+> **Eine Empfehlung aus diesem Konzept hat sich als falsch erwiesen.** Stufe 1.2 schlug
+> vor, Namensähnlichkeit **plus** Täuschungsmerkmal (Homoglyphen, unsichtbare Zeichen)
+> automatisch zu sperren. Ein Code-Review vor dem Ausrollen hat gezeigt: das hätte echte
+> Mitglieder getroffen — etwa eine ukrainische Botschafterin namens „Олена Geldhelden
+> Team" (kyrillischer Vorname) oder jedes Mitglied mit Hautfarben-Emoji im Anzeigenamen.
+> Das Merkmal muss **ursächlich für den Treffer** sein, nicht bloß irgendwo im Namen
+> vorkommen. Umgesetzt wurde deshalb ein strengeres Kriterium: gesperrt wird nur, wenn
+> der Namenstreffer **ausschließlich nach dem Entfernen der Verschleierung** entsteht.
+> Ergebnis: 0 Fehlalarme bei 7.174 Mitgliedern.
 
 ---
 
