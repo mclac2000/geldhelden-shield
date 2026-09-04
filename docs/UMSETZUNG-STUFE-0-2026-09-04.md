@@ -205,6 +205,81 @@ Die 4 oben genannten Konten werden dann gesperrt, sobald sie das nächste Mal sc
 
 ---
 
+## 4b. Nachtrag: Schutz, der nur auf dem Papier stand
+
+Beim Verifizieren des Rollouts fiel auf, dass **alles hinter `bot.launch()` in
+keinem einzigen Start je ausgeführt wurde**. `bot.launch()` löst im
+Long-Polling-Betrieb nicht auf — der Code dahinter ist unerreichbar.
+
+Nachweis: `[Startup] ✅ Bot erfolgreich gestartet!` steht direkt hinter dem
+Aufruf und taucht in **keinem** Log auf.
+
+Betroffen war nicht nur eine Logzeile:
+
+| Was dort hing | Folge |
+|---|---|
+| **Wochenbericht-Cron** (sonntags 20:00) | war **nie registriert** — es gab nie einen automatischen Wochenbericht |
+| **Baseline-Scan-Cron** (monatlich) | war **nie registriert**. `baseline_scans` enthält 42 Läufe, alle manuell, **der letzte vom 11.01.2026** — die Mitgliederbasis wurde seit fast acht Monaten nicht aufgefrischt |
+| Bot-ID über `getMe` | nie ermittelt |
+| `sendStartupLog()` | nie gesendet |
+| einmaliger Wartungslauf beim Start | nie ausgeführt (der Stundentakt lief separat) |
+
+Alles wurde vor `bot.launch()` gezogen und ist nachweislich aktiv:
+
+```
+[1] Bot-ID erfolgreich ermittelt
+[1] Wochenreport-Job gestartet
+[1] Baseline-Scan-Job gestartet
+```
+
+**`checkAllGroupsOnStartup` ist dagegen entwarnt** — trotz Namen und
+Aufrufkommentar („Prüfe alle Gruppen und setze Status automatisch basierend auf
+Bot-Admin-Status") lädt die Funktion nur die Gruppenliste und schreibt eine
+Logzeile. Sie prüft nichts. Der Kommentar wurde korrigiert; wer dort Schutz
+erwartet, muss ihn erst bauen.
+
+### Gruppenliste bereinigt: 62 → 55
+
+Ein Live-Abgleich aller 63 Einträge gegen Telegram ergab **6 Gruppen, die der Bot
+überhaupt nicht mehr erreicht** (`chat not found`), plus eine auf eine neue
+Supergruppen-ID migrierte:
+
+| Gruppe | Mitglieder | letzter Beitritt | Einordnung |
+|---|---:|---|---|
+| Geldhelden Meetup München | 5 | 16.03.2026 | eigene Gruppe, Bot entfernt |
+| **Neue Freie Welt** | **534** | 13.03.2026 | große Gruppe, Bot entfernt |
+| **(Titel in Zierschrift)** | **1218** | **27.08.2026** | große, aktive Gruppe, Bot erst kürzlich raus |
+| TRADING 212 PLATFORM LLC. | 1 | nie | fremde Gruppe |
+| Wahrheits-Community (Krypto-Investition) | 3 | 10.05.2026 | fremde Gruppe |
+| Jjhhh | 1 | nie | Müll |
+| Geldhelden Meetup Bali | 1 | nie | auf neue Supergruppen-ID migriert |
+
+Alle sieben stehen jetzt auf `disabled` — **keine Zeile gelöscht**, jede lässt
+sich mit `/group managed` zurückholen. Sicherung vor dem Eingriff liegt unter
+`backups/shield-vor-gruppenbereinigung-*.db`.
+
+> **Für Marco:** Bei den beiden großen Gruppen (534 und 1218 Mitglieder) wurde
+> der Bot entfernt. Wenn das nicht beabsichtigt war, bitte wieder als Admin
+> hinzufügen — dann `/group managed` in der Gruppe. Umgekehrt lohnt ein Blick
+> darauf, wie der Bot in „TRADING 212 PLATFORM LLC." und
+> „Wahrheits-Community (Krypto-Investition)" geraten ist.
+
+Damit meldet der Start jetzt `Managed: 55` statt `62` — die Zahl beschreibt
+tatsächlich erreichbare Gruppen.
+
+### `ADMIN_SYNC`-Dauerfehler beseitigt (8 → 0)
+
+`adminSync` nutzte `isGroupManaged()` aus `groupConfig.ts`. Das liest ein
+**anderes** Feld (`group_config.managed`) als der Rest des Systems
+(`groups.status`) und liefert für Gruppen ohne Eintrag `true` — deshalb wurden
+auch deaktivierte Gruppen abgefragt. Jetzt läuft `getManagedGroups()`, dieselbe
+Liste wie Sperren, Scans und Wellen-Erkennung. Ergebnis: `errors=0`.
+
+Das war der eigentliche Schaden an den acht Fehlern: solange ein Bericht dauerhaft
+Fehler wirft, sieht niemand mehr hin, wenn ein echter dazukommt.
+
+---
+
 ## 5. Stufe 2 (Beitritt nur nach Genehmigung) — mein Urteil: **nicht bauen**
 
 Marcos Bedingung war klar: nur vollautomatisch, keine Menschen, keine Warteschlange. Ich habe das geprüft und rate ab. Die Gründe, ehrlich:
