@@ -109,7 +109,8 @@ async function collectVisibleMembers(
  */
 export async function runBaselineScan2(
   ctx: Context,
-  resume: boolean = false
+  resume: boolean = false,
+  scanType: 'manual' | 'auto' = 'manual'
 ): Promise<ScanResult> {
   const managedGroups = getManagedGroups();
   const telegram = ctx.telegram;
@@ -125,6 +126,13 @@ export async function runBaselineScan2(
     errors: 0,
     rateLimited: false,
   };
+
+  // Lauf-Protokoll anlegen. Ohne diesen Eintrag gaebe es keinerlei Nachweis,
+  // dass der Scan ueberhaupt gelaufen ist — genau die Luecke, die den
+  // achtmonatigen Ausfall des Scan-Crons unsichtbar gemacht hat.
+  const { startScanRun, finishScanRun, saveBaselineScan } = await import('./db');
+  const runId = startScanRun(scanType, managedGroups.length);
+  let skippedNoAdmin = 0;
   
   if (managedGroups.length === 0) {
     await sendToAdminLogChat('[Scan] Keine managed Gruppen gefunden.', ctx);
@@ -165,7 +173,9 @@ export async function runBaselineScan2(
       const botAdminCheck = await isBotAdminInGroup(chatIdStr, telegram);
       if (!botAdminCheck.isAdmin) {
         console.log(`[Scan] Bot ist kein Admin in ${chatIdStr}, überspringe`);
-        result.errors++;
+        // Getrennt von echten Fehlern zaehlen: fehlende Adminrechte sind ein
+        // Konfigurationsthema, kein Scan-Fehler.
+        skippedNoAdmin++;
         continue;
       }
       
@@ -190,13 +200,14 @@ export async function runBaselineScan2(
       
       // Speichere/aktualisiere Mitglieder
       let newMembersInGroup = 0;
+      // Bekannte Mitglieder EINMAL laden statt einmal pro Mitglied — vorher
+      // war das eine vollstaendige Abfrage je Mitglied (O(n^2) pro Gruppe).
+      const bekannt = new Set(getBaselineMembersForGroup(chatIdStr).map(m => m.user_id));
       for (const member of collection.members) {
-        // Prüfe ob bereits existiert
-        const existing = getBaselineMembersForGroup(chatIdStr).find(
-          m => m.user_id === member.user_id
-        );
-        
+        const existing = bekannt.has(member.user_id);
+
         if (!existing) {
+          bekannt.add(member.user_id);
           newMembersInGroup++;
           result.newMembers++;
         }
@@ -208,11 +219,15 @@ export async function runBaselineScan2(
           member.first_name,
           member.last_name,
           member.is_bot,
-          'manual',
+          scanType,
           member.source
         );
       }
       
+      // Pro Gruppe eine Zeile — damit ist nachvollziehbar, welche Gruppe wann
+      // zuletzt gescannt wurde, nicht nur der Gesamtlauf.
+      saveBaselineScan(chatIdStr, scanType, collection.members.length, newMembersInGroup, collection.rateLimited);
+
       // Aktualisiere Scan-Status
       setGroupScanStatus(chatIdStr, 'idle', Date.now());
       updateGroupScanMemberCount(chatIdStr);
@@ -242,11 +257,21 @@ export async function runBaselineScan2(
     }
   }
   
+  // Lauf festschreiben
+  finishScanRun(runId, {
+    scannedGroups: result.scannedGroups,
+    skippedNoAdmin,
+    errors: result.errors,
+    newMembers: result.newMembers,
+    rateLimited: result.rateLimited,
+  });
+
   // Abschluss-Log
   const stats = getScanStatistics();
   await sendToAdminLogChat(
     `[Scan] Baseline-Scan 2.0 abgeschlossen:\n` +
     `✅ Gruppen gescannt: ${result.scannedGroups}/${result.totalGroups}\n` +
+    `${skippedNoAdmin > 0 ? `⏭ Übersprungen (Bot kein Admin): ${skippedNoAdmin}\n` : ''}` +
     `👥 Neue Mitglieder erfasst: ${result.newMembers}\n` +
     `📊 Gesamt bekannte Mitglieder: ${stats.totalKnownMembers}\n` +
     `${result.rateLimited ? '⚠️ Rate-Limit erreicht - Scan kann fortgesetzt werden' : ''}\n` +
@@ -265,6 +290,7 @@ export async function runBaselineScan(
   ctx: Context,
   scanSource: 'manual' | 'auto' = 'manual'
 ): Promise<ScanResult> {
-  // Rufe neue Scan-Funktion auf
-  return runBaselineScan2(ctx, false);
+  // scanSource wurde bis 09/2026 verschluckt — dadurch war jeder Lauf als
+  // 'manual' vermerkt, auch der automatische.
+  return runBaselineScan2(ctx, false, scanSource);
 }

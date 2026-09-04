@@ -852,6 +852,25 @@ bot.command('health', async (ctx: Context) => {
     // Note: Queue-Backlog-Tracking kann später implementiert werden
     const queueBacklog = 0;
     
+    // Hintergrundjobs und letzter Scan-Lauf.
+    // Diese beiden Zeilen sind die Lehre aus 09/2026: Wochenbericht und
+    // Baseline-Scan waren acht Monate lang nicht registriert, und nichts im
+    // System hat es angezeigt.
+    const { getLastScanRun } = await import('./db');
+    const { pruefeJobs, ERWARTETE_JOBS } = await import('./jobRegistry');
+    const jobs = pruefeJobs();
+    const lauf = getLastScanRun();
+
+    const jobZeile = jobs.ok
+      ? `✅ Hintergrundjobs: ${Object.keys(ERWARTETE_JOBS).length}/${Object.keys(ERWARTETE_JOBS).length} registriert`
+      : `⚠️ Hintergrundjobs FEHLEN: ${jobs.fehlend.join(', ')}`;
+
+    const scanZeile = lauf
+      ? `🔎 Letzter Baseline-Scan: ${new Date(lauf.started_at).toISOString().replace('T', ' ').substring(0, 16)} ` +
+        `(${lauf.scan_type}) — ${lauf.scanned_groups}/${lauf.total_groups} Gruppen, ` +
+        `${lauf.new_members} neu, ${lauf.skipped_no_admin} übersprungen, ${lauf.errors} Fehler`
+      : `🔎 Letzter Baseline-Scan: noch keiner protokolliert`;
+
     await ctx.reply(
       `🛡️ <b>Shield Health Status</b>\n\n` +
       `✅ Bot online\n` +
@@ -859,7 +878,9 @@ bot.command('health', async (ctx: Context) => {
       `📋 Known groups: ${knownGroups.length}\n` +
       `🕐 Last event: ${lastEventTime}\n` +
       `🔄 Queue backlog: ${queueBacklog}\n` +
-      `🔍 Active dedup fingerprints: ${dedupStats.activeFingerprints}`,
+      `🔍 Active dedup fingerprints: ${dedupStats.activeFingerprints}\n\n` +
+      `${jobZeile}\n` +
+      `${scanZeile}`,
       { parse_mode: 'HTML' }
     );
   });

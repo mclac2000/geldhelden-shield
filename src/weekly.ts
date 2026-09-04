@@ -45,7 +45,11 @@ export async function generateWeeklyReport(ctx?: Context): Promise<string> {
   const shieldStats = getShieldStatistics(windowHours);
   const globalBans = shieldStats.globalBans;
   const newObservedUsers = getNewObservedUsersCount(windowHours);
-  const clusterStats = getClusterStats();
+  // Zeitfenster übergeben — ohne das war hier der Gesamtbestand seit
+  // Systemstart gemeldet, im Wochenbericht also eine Zahl, die wie eine
+  // Wochenzahl aussah und jede Woche wuchs.
+  const clusterStats = getClusterStats(windowHours);
+  const clusterGesamt = getClusterStats();
   const topGroupsByJoins = getTopGroupsByJoins(3, windowHours);
   const topGroupsByBans = getTopGroupsByBans(3, windowHours);
   const topGroupsByCluster = getTopGroupsByClusterParticipation(3);
@@ -66,10 +70,11 @@ export async function generateWeeklyReport(ctx?: Context): Promise<string> {
   report += `Neu beobachtete User: ${newObservedUsers}\n\n`;
   
   // 3. Cluster-Status
-  report += `Cluster-Status\n`;
+  report += `Cluster-Status (diese Woche)\n`;
   report += `L1 (auffällig): ${clusterStats.l1}\n`;
   report += `L2 (Netzwerk): ${clusterStats.l2}\n`;
   report += `L3 (Global-Ban): ${clusterStats.l3}\n`;
+  report += `Gesamtbestand seit Systemstart: ${clusterGesamt.total}\n`;
   
   // Cluster-Statusbewertung
   let clusterAssessment = '';
@@ -117,21 +122,74 @@ export async function generateWeeklyReport(ctx?: Context): Promise<string> {
     report += '\n';
   }
   
-  // 5. Zusammenfassung
+  // 5. Systemzustand — der eigentliche Zweck eines Wochenberichts.
+  //
+  // Bis 09/2026 endete der Bericht mit dem festen Satz "Das System arbeitet
+  // stabil und überwacht das Netzwerk kontinuierlich." — unabhängig davon, ob
+  // das stimmte. Er hätte auch dann dort gestanden, als der Bot mit 401 in
+  // einer Neustartschleife lag. Ein Bericht, der nur bestätigt, ist schlimmer
+  // als keiner: er erzeugt Vertrauen, wo keines hingehört.
+  const befunde: string[] = [];
+  report += `Systemzustand\n`;
+
+  try {
+    const { pruefeJobs, ERWARTETE_JOBS } = await import('./jobRegistry');
+    const jobs = pruefeJobs();
+    if (jobs.ok) {
+      report += `Hintergrundjobs: alle ${Object.keys(ERWARTETE_JOBS).length} registriert\n`;
+    } else {
+      report += `Hintergrundjobs: ${jobs.fehlend.length} FEHLEN — ${jobs.fehlend.join(', ')}\n`;
+      befunde.push(`${jobs.fehlend.length} Hintergrundjobs laufen nicht`);
+    }
+  } catch {
+    report += `Hintergrundjobs: nicht prüfbar\n`;
+  }
+
+  try {
+    const { getLastScanRun } = await import('./db');
+    const lauf = getLastScanRun();
+    if (!lauf) {
+      report += `Baseline-Scan: noch kein Lauf protokolliert\n`;
+      befunde.push('kein Baseline-Scan protokolliert');
+    } else {
+      const tage = Math.floor((Date.now() - lauf.started_at) / 86400000);
+      report += `Baseline-Scan: vor ${tage} Tagen (${lauf.scanned_groups}/${lauf.total_groups} Gruppen, ` +
+        `${lauf.skipped_no_admin} übersprungen, ${lauf.errors} Fehler)\n`;
+      if (tage > 40) befunde.push(`letzter Baseline-Scan vor ${tage} Tagen`);
+    }
+  } catch {
+    report += `Baseline-Scan: nicht prüfbar\n`;
+  }
+
+  // Gruppen, in denen der Bot laut Datenbank sein sollte, aber deaktiviert ist
+  const deaktiviert = allGroups.filter(g => g.status === 2).length; // 2 = disabled
+  if (deaktiviert > 0) {
+    report += `Deaktivierte Gruppen: ${deaktiviert} (Bot dort ohne Zugriff)\n`;
+  }
+
+  report += `\n`;
+
+  // 6. Zusammenfassung
   report += `Zusammenfassung\n`;
-  report += `Das Netzwerk umfasst ${managedGroups.length} managed Gruppen mit ${activeUsers} aktiven Usern in der Berichtswoche. `;
-  report += `${newUsers} neue User wurden registriert. `;
-  
+  report += `Das Netzwerk umfasst ${managedGroups.length} verwaltete Gruppen mit ${activeUsers} aktiven Usern in der Berichtswoche. `;
+  report += `${newUsers} User wurden neu erfasst. `;
+
   if (globalBans > 0) {
-    report += `Sicherheitsmaßnahmen: ${globalBans} globale Banns. `;
+    report += `Sicherheitsmaßnahmen: ${globalBans} global gesperrte Personen. `;
   }
-  
+
   if (clusterStats.total > 0) {
-    report += `Cluster-Erkennung: ${clusterStats.total} Cluster identifiziert (${clusterStats.l1} L1, ${clusterStats.l2} L2, ${clusterStats.l3} L3). `;
+    report += `Cluster-Erkennung diese Woche: ${clusterStats.total} (${clusterStats.l1} L1, ${clusterStats.l2} L2, ${clusterStats.l3} L3). `;
   }
-  
-  report += `Das System arbeitet stabil und überwacht das Netzwerk kontinuierlich.`;
-  
+
+  // Abschluss: sagt aus, was tatsächlich gemessen wurde — nicht mehr.
+  if (befunde.length > 0) {
+    report += `\n\nACHTUNG: ${befunde.join('; ')}. Bitte nachsehen.`;
+  } else {
+    report += `\n\nKeine Auffälligkeiten am System selbst: alle Hintergrundjobs laufen, ` +
+      `der Baseline-Scan ist aktuell.`;
+  }
+
   return report;
 }
 

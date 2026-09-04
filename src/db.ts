@@ -994,6 +994,35 @@ export function initDatabase(): any {
     }
   }
 
+  // Migration: scan_runs — Lauf-Protokoll des Baseline-Scans (09/2026)
+  //
+  // Bis dahin wurde NICHTS über Scan-Läufe festgehalten: scan.ts rief
+  // saveBaselineScan() nie auf. Die Anzeige "letzter Scan" stand deshalb
+  // dauerhaft auf dem 11.01.2026 — egal wie oft der Scan lief. Eine Anzeige,
+  // die dauerhaft dasselbe behauptet, erzeugt Vertrauen, wo keines hingehört,
+  // und hätte den achtmonatigen Ausfall des Scan-Crons sichtbar gemacht.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS scan_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        scan_type TEXT NOT NULL,
+        total_groups INTEGER NOT NULL DEFAULT 0,
+        scanned_groups INTEGER NOT NULL DEFAULT 0,
+        skipped_no_admin INTEGER NOT NULL DEFAULT 0,
+        errors INTEGER NOT NULL DEFAULT 0,
+        new_members INTEGER NOT NULL DEFAULT 0,
+        rate_limited INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_scan_runs_started ON scan_runs(started_at DESC);
+    `);
+  } catch (error: any) {
+    if (!error.message.includes('duplicate column name') && !error.message.includes('already exists')) {
+      console.warn('[DB] Migration Warnung (scan_runs):', error.message);
+    }
+  }
+
   // Migration: Tabellen für die Erkennung von Werbe-Wellen (09/2026)
   try {
     db.exec(`
@@ -3609,14 +3638,22 @@ export function getDistinctManagedGroupsIn24h(userId: number): string[] {
 /**
  * Holt Cluster-Statistiken (Prompt 5: aktualisiert)
  */
-export function getClusterStats(): { l1: number; l2: number; l3: number; total: number } {
+/**
+ * Cluster-Zahlen.
+ *
+ * @param windowHours Zeitfenster in Stunden. Ohne Angabe werden ALLE Cluster
+ *   seit Systemstart gezählt — im Wochenbericht sah das aus wie eine
+ *   Wochenzahl ("1107 Cluster identifiziert"), war aber der Gesamtbestand und
+ *   wuchs jede Woche weiter.
+ */
+export function getClusterStats(windowHours?: number): { l1: number; l2: number; l3: number; total: number } {
   const db = getDatabase();
-  const stmt = db.prepare(`
-    SELECT level, COUNT(*) as count
-    FROM clusters
-    GROUP BY level
-  `);
-  const results = stmt.all() as Array<{ level: number; count: number }>;
+  const stmt = windowHours
+    ? db.prepare(`SELECT level, COUNT(*) as count FROM clusters WHERE created_at >= ? GROUP BY level`)
+    : db.prepare(`SELECT level, COUNT(*) as count FROM clusters GROUP BY level`);
+  const results = (windowHours
+    ? stmt.all(Date.now() - windowHours * 3600 * 1000)
+    : stmt.all()) as Array<{ level: number; count: number }>;
   
   let l1 = 0;
   let l2 = 0;
@@ -3731,7 +3768,13 @@ export function getTopGroupsByBans(limit: number = 5, windowHours: number = 24):
   const db = getDatabase();
   const cutoffTime = Date.now() - (windowHours * 60 * 60 * 1000);
   const stmt = db.prepare(`
-    SELECT a.chat_id, COUNT(*) as ban_count
+    -- COUNT(DISTINCT user_id), nicht COUNT(*): die actions-Tabelle enthält pro
+    -- Sperre eine Zeile je Gruppe UND je Wiederholung. Vor dem Stopp der
+    -- Ban-Schleife (09/2026) standen dort bis zu 50 Zeilen pro Person und
+    -- Gruppe. Der Wochenbericht meldete dadurch "755 Banns" für eine Gruppe,
+    -- in der tatsächlich eine niedrige zweistellige Zahl an Personen gesperrt
+    -- wurde. Gezählt gehören Menschen, nicht Zeilen.
+    SELECT a.chat_id, COUNT(DISTINCT a.user_id) as ban_count
     FROM actions a
     WHERE a.action = 'ban'
       AND a.created_at >= ?
@@ -3867,6 +3910,74 @@ export function saveBaselineScan(
   `);
   const result = stmt.run(chatId, scanType, Date.now(), membersCount, membersScanned, scanLimited ? 1 : 0);
   return result.lastInsertRowid as number;
+}
+
+// --- Lauf-Protokoll des Baseline-Scans (09/2026) ---
+
+export interface ScanRunSummary {
+  id: number;
+  started_at: number;
+  finished_at: number | null;
+  scan_type: string;
+  total_groups: number;
+  scanned_groups: number;
+  skipped_no_admin: number;
+  errors: number;
+  new_members: number;
+  rate_limited: number;
+}
+
+/** Legt einen Lauf an und liefert seine ID (zum Abschließen mit finishScanRun) */
+export function startScanRun(scanType: 'manual' | 'auto', totalGroups: number): number | null {
+  try {
+    const info = getDatabase().prepare(`
+      INSERT INTO scan_runs (started_at, scan_type, total_groups) VALUES (?,?,?)
+    `).run(Date.now(), scanType, totalGroups);
+    return Number(info.lastInsertRowid);
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in startScanRun:', error instanceof Error ? error.message : String(error));
+    return null;
+  }
+}
+
+/** Schreibt das Ergebnis eines Laufs fest */
+export function finishScanRun(
+  runId: number | null,
+  r: { scannedGroups: number; skippedNoAdmin: number; errors: number; newMembers: number; rateLimited: boolean }
+): void {
+  if (runId === null) return;
+  try {
+    getDatabase().prepare(`
+      UPDATE scan_runs
+      SET finished_at = ?, scanned_groups = ?, skipped_no_admin = ?, errors = ?,
+          new_members = ?, rate_limited = ?
+      WHERE id = ?
+    `).run(Date.now(), r.scannedGroups, r.skippedNoAdmin, r.errors, r.newMembers, r.rateLimited ? 1 : 0, runId);
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in finishScanRun:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Der zuletzt abgeschlossene Scan-Lauf, oder null wenn es noch keinen gibt */
+export function getLastScanRun(): ScanRunSummary | null {
+  try {
+    const row = getDatabase().prepare(`
+      SELECT * FROM scan_runs WHERE finished_at IS NOT NULL ORDER BY started_at DESC LIMIT 1
+    `).get() as ScanRunSummary | undefined;
+    return row || null;
+  } catch {
+    return null;
+  }
+}
+
+export function getScanRuns(limit: number = 10): ScanRunSummary[] {
+  try {
+    return getDatabase()
+      .prepare('SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT ?')
+      .all(limit) as ScanRunSummary[];
+  } catch {
+    return [];
+  }
 }
 
 /**
