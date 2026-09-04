@@ -25,6 +25,12 @@ export interface Config {
   // Anti-Impersonation
   protectedNames: string[];
   impersonationSimilarityThreshold: number; // Levenshtein-Ähnlichkeit (0-100)
+  /** big_file_unique_id der Profilfotos, die geschützt sind (Referenz-Fingerabdrücke) */
+  protectedPhotoIds: string[];
+  /** User-IDs, die diese Fotos/Namen legitim tragen dürfen (die echten Accounts) */
+  protectedUserIds: number[];
+  /** Automatischer Global-Ban bei zweifelsfreier Identitäts-Täuschung */
+  impersonationAutoBan: boolean;
   // Debug
   debugJoins: boolean;
   // Moderation Defaults
@@ -245,6 +251,25 @@ export function loadConfig(): Config {
     'IMPERSONATION_SIMILARITY_THRESHOLD'
   );
 
+  // Geschützte Profilfoto-Fingerabdrücke (big_file_unique_id aus getChat)
+  // Zwei Accounts mit demselben Wert tragen dasselbe Profilbild.
+  const protectedPhotoIds = (process.env.PROTECTED_PHOTO_IDS || '')
+    .split(',')
+    .map(v => v.trim())
+    .filter(v => v.length > 0);
+
+  // Die echten Accounts, die diese Fotos/Namen tragen dürfen
+  const protectedUserIds = (process.env.PROTECTED_USER_IDS || '')
+    .split(',')
+    .map(v => parseInt(v.trim(), 10))
+    .filter(v => !isNaN(v) && v > 0);
+
+  const impersonationAutoBan = parseBoolean(process.env.IMPERSONATION_AUTO_BAN, false);
+
+  if (protectedPhotoIds.length > 0 && protectedUserIds.length === 0) {
+    console.warn('⚠️  [Config] PROTECTED_PHOTO_IDS gesetzt, aber PROTECTED_USER_IDS leer — der echte Account würde sich selbst als Fälschung erkennen. Foto-Prüfung wird deaktiviert.');
+  }
+
   // Debug
   const debugJoins = parseBoolean(process.env.DEBUG_JOINS, false);
 
@@ -306,6 +331,9 @@ Mehr Infos: {bio_link}`;
     riskAutoUnrestrictBuffer,
     protectedNames,
     impersonationSimilarityThreshold,
+    protectedPhotoIds,
+    protectedUserIds,
+    impersonationAutoBan,
     debugJoins,
     linksLockedDefault,
     forwardLockedDefault,
@@ -346,4 +374,21 @@ export function isDryRunMode(): boolean {
 export function setDryRunMode(enabled: boolean | null): void {
   runtimeDryRunMode = enabled;
   console.log(`[DRYRUN] Runtime-Toggle: ${enabled === null ? 'Config-Modus' : enabled ? 'AKTIV' : 'INAKTIV'}`);
+}
+
+// Runtime-Toggle für Panic Mode.
+// Bis 09/2026 hat /panic nur eine Meldung geschrieben und nichts abgeschaltet —
+// es gab also keinen wirksamen Not-Aus. Bei einem System, das automatisch sperrt,
+// muss ein Admin die Automatik ohne Neustart stoppen können.
+let runtimePanicMode: boolean | null = null;
+
+/** Ist der Notfallmodus aktiv? (Runtime-Toggle hat Vorrang vor der .env) */
+export function isPanicMode(): boolean {
+  return runtimePanicMode !== null ? runtimePanicMode : config.panicMode;
+}
+
+/** Setzt den Notfallmodus zur Laufzeit (null = Wert aus der .env verwenden) */
+export function setPanicMode(enabled: boolean | null): void {
+  runtimePanicMode = enabled;
+  console.log(`[PANIC] Runtime-Toggle: ${enabled === null ? 'Config-Modus' : enabled ? 'AKTIV — alle Auto-Bans gestoppt' : 'INAKTIV'}`);
 }

@@ -151,7 +151,14 @@ export function getAllowedDomains(chatId: string): string[] {
  */
 export function isDomainAllowed(chatId: string, domain: string): boolean {
   const allowedDomains = getAllowedDomains(chatId);
-  const lowerDomain = domain.toLowerCase();
-  
-  return allowedDomains.some(allowed => lowerDomain.includes(allowed.toLowerCase()));
+  // Führenden Punkt und "www." entfernen, damit "www.geldhelden.org" passt
+  const host = domain.toLowerCase().replace(/^\.+/, '').replace(/^www\./, '');
+
+  return allowedDomains.some(allowedRaw => {
+    const allowed = allowedRaw.toLowerCase().trim().replace(/^\.+/, '').replace(/^www\./, '');
+    if (!allowed) return false;
+    // Exakte Domain oder echte Subdomain — NICHT mehr includes().
+    // includes() ließ "geldhelden.org.betrueger.com" als erlaubt durchgehen.
+    return host === allowed || host.endsWith('.' + allowed);
+  });
 }

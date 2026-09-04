@@ -933,6 +933,107 @@ export function initDatabase(): any {
     }
   }
 
+  // Migration: Erstelle identity_events Tabelle (Anti-Impersonation, 09/2026)
+  // Vollständiges, nachvollziehbares Protokoll jeder Identitäts-Entscheidung —
+  // Voraussetzung dafür, dass automatische Sperren im Zweifel zurückgenommen
+  // werden können.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS identity_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        chat_id TEXT,
+        source TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('none','alarm','ban')),
+        confidence TEXT NOT NULL,
+        reason TEXT,
+        matched_name TEXT,
+        similarity REAL,
+        match_type TEXT,
+        invisible_chars INTEGER NOT NULL DEFAULT 0,
+        mixed_script INTEGER NOT NULL DEFAULT 0,
+        photo_match INTEGER NOT NULL DEFAULT 0,
+        photo_fingerprint TEXT,
+        username TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        reverted INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_identity_events_user ON identity_events(user_id);
+      CREATE INDEX IF NOT EXISTS idx_identity_events_created ON identity_events(created_at);
+      CREATE INDEX IF NOT EXISTS idx_identity_events_action ON identity_events(action);
+    `);
+  } catch (error: any) {
+    if (!error.message.includes('duplicate column name') && !error.message.includes('already exists')) {
+      console.warn('[DB] Migration Warnung (identity_events):', error.message);
+    }
+  }
+
+  // Migration: Erstelle pending_ban_log Tabelle (Anti-Impersonation, 09/2026)
+  // Protokolliert jede Sperre, die aus der pending_username_blacklist entstanden ist.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS pending_ban_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        username TEXT NOT NULL,
+        chat_id TEXT,
+        source TEXT,
+        reason TEXT,
+        groups_banned INTEGER NOT NULL DEFAULT 0,
+        reverted INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_pending_ban_log_user ON pending_ban_log(user_id);
+      CREATE INDEX IF NOT EXISTS idx_pending_ban_log_created ON pending_ban_log(created_at);
+    `);
+  } catch (error: any) {
+    if (!error.message.includes('duplicate column name') && !error.message.includes('already exists')) {
+      console.warn('[DB] Migration Warnung (pending_ban_log):', error.message);
+    }
+  }
+
+  // Migration: Erstelle identity_exempt Tabelle (Anti-Impersonation, 09/2026)
+  // Wer einmal per /pardon entsperrt wurde, darf nicht beim nächsten Beitritt
+  // erneut automatisch gesperrt werden — sonst wäre die Rücknahme wirkungslos.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS identity_exempt (
+        user_id INTEGER PRIMARY KEY,
+        added_at INTEGER NOT NULL,
+        added_by INTEGER,
+        reason TEXT
+      );
+    `);
+  } catch (error: any) {
+    if (!error.message.includes('duplicate column name') && !error.message.includes('already exists')) {
+      console.warn('[DB] Migration Warnung (identity_exempt):', error.message);
+    }
+  }
+
+  // Migration: Erstelle user_name_history Tabelle (Anti-Impersonation, 09/2026)
+  // baseline_members überschreibt Namen bei jedem Update — eine Umbenennung war
+  // damit unsichtbar. Genau darüber läuft aber der Angriff: unauffällig beitreten,
+  // später in "Marco" umbenennen.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS user_name_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        username TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        seen_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_name_history_user ON user_name_history(user_id, seen_at DESC);
+    `);
+  } catch (error: any) {
+    if (!error.message.includes('duplicate column name') && !error.message.includes('already exists')) {
+      console.warn('[DB] Migration Warnung (user_name_history):', error.message);
+    }
+  }
+
   // Migration: Erstelle user_group_activity Tabelle (für Prompt 5)
   try {
     db.exec(`
@@ -2036,6 +2137,244 @@ export function logAction(
     VALUES (?, ?, ?, ?, ?)
   `);
   stmt.run(userId, chatId, action, reason, Date.now());
+}
+
+/**
+ * Zeitpunkt des letzten Ban-Versuchs für einen User (Epoch-ms) oder null.
+ *
+ * Wird gebraucht, um die Ban-Schleife zu unterbinden: Vor dem Fix wurden bereits
+ * gebannte User bei jedem Cluster-Lauf erneut in allen 62 Gruppen gebannt —
+ * 1.017.043 Ban-Aktionen bei nur 20.052 eindeutigen User/Gruppe-Paaren.
+ */
+export function getLastBanAttemptAt(userId: number): number | null {
+  const db = getDatabase();
+  const stmt = db.prepare(`
+    SELECT created_at FROM actions
+    WHERE user_id = ? AND action = 'ban'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `);
+  const row = stmt.get(userId) as { created_at: number } | undefined;
+  return row ? row.created_at : null;
+}
+
+// --- Namens-Historie (Anti-Impersonation, 09/2026) ---
+
+export interface NameSnapshot {
+  username: string | null;
+  first_name: string | null;
+  last_name: string | null;
+}
+
+/** Letzter bekannter Namensstand eines Users (aus der Historie, sonst baseline_members) */
+export function getLastKnownName(userId: number): NameSnapshot | null {
+  try {
+    const db = getDatabase();
+    const hist = db.prepare(`
+      SELECT username, first_name, last_name FROM user_name_history
+      WHERE user_id = ? ORDER BY seen_at DESC LIMIT 1
+    `).get(userId) as NameSnapshot | undefined;
+    if (hist) return hist;
+
+    const base = db.prepare(`
+      SELECT username, first_name, last_name FROM baseline_members
+      WHERE user_id = ? ORDER BY last_seen_at DESC LIMIT 1
+    `).get(userId) as NameSnapshot | undefined;
+    return base || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Vergleicht den aktuellen Namen mit dem letzten bekannten Stand.
+ * Schreibt bei Abweichung (oder wenn der User unbekannt ist) einen Historie-Eintrag.
+ *
+ * @returns 'new' (unbekannt), 'renamed' (geändert) oder 'unchanged'
+ */
+export function recordNameSnapshot(
+  userId: number,
+  username: string | null,
+  firstName: string | null,
+  lastName: string | null
+): 'new' | 'renamed' | 'unchanged' {
+  try {
+    const db = getDatabase();
+    const prev = getLastKnownName(userId);
+    const norm = (v: string | null | undefined) => (v == null || v === '' ? null : v);
+
+    const changed =
+      !prev ||
+      norm(prev.username) !== norm(username) ||
+      norm(prev.first_name) !== norm(firstName) ||
+      norm(prev.last_name) !== norm(lastName);
+
+    if (!changed) return 'unchanged';
+
+    db.prepare(`
+      INSERT INTO user_name_history (user_id, username, first_name, last_name, seen_at)
+      VALUES (?,?,?,?,?)
+    `).run(userId, norm(username), norm(firstName), norm(lastName), Date.now());
+
+    return prev ? 'renamed' : 'new';
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in recordNameSnapshot:', error instanceof Error ? error.message : String(error));
+    return 'unchanged';
+  }
+}
+
+/** Namens-Historie eines Users, neueste zuerst */
+export function getNameHistory(userId: number, limit: number = 20): any[] {
+  try {
+    const db = getDatabase();
+    return db.prepare(`
+      SELECT username, first_name, last_name, seen_at FROM user_name_history
+      WHERE user_id = ? ORDER BY seen_at DESC LIMIT ?
+    `).all(userId, limit);
+  } catch {
+    return [];
+  }
+}
+
+// --- Anti-Impersonation Protokoll (09/2026) ---
+
+export interface IdentityEventInput {
+  userId: number;
+  chatId: string | null;
+  source: string;
+  action: 'none' | 'alarm' | 'ban';
+  confidence: string;
+  reason: string | null;
+  matchedName: string | null;
+  similarity: number;
+  matchType: string;
+  invisibleChars: boolean;
+  mixedScript: boolean;
+  photoMatch: boolean;
+  photoFingerprint: string | null;
+  username: string | null;
+  firstName: string | null;
+  lastName: string | null;
+}
+
+/** Schreibt eine Identitäts-Entscheidung ins Protokoll. Gibt die Event-ID zurück. */
+export function logIdentityEvent(e: IdentityEventInput): number | null {
+  try {
+    const db = getDatabase();
+    const stmt = db.prepare(`
+      INSERT INTO identity_events (
+        created_at, user_id, chat_id, source, action, confidence, reason,
+        matched_name, similarity, match_type, invisible_chars, mixed_script,
+        photo_match, photo_fingerprint, username, first_name, last_name
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `);
+    const info = stmt.run(
+      Date.now(), e.userId, e.chatId, e.source, e.action, e.confidence, e.reason,
+      e.matchedName, e.similarity, e.matchType, e.invisibleChars ? 1 : 0,
+      e.mixedScript ? 1 : 0, e.photoMatch ? 1 : 0, e.photoFingerprint,
+      e.username, e.firstName, e.lastName
+    );
+    return Number(info.lastInsertRowid);
+  } catch (error: unknown) {
+    console.error('[DB] Fehler beim Schreiben von identity_events:', error instanceof Error ? error.message : String(error));
+    return null;
+  }
+}
+
+/** Ist der User dauerhaft von der Impersonations-Automatik ausgenommen? */
+export function isIdentityExempt(userId: number): boolean {
+  try {
+    const db = getDatabase();
+    return !!db.prepare('SELECT user_id FROM identity_exempt WHERE user_id = ?').get(userId);
+  } catch {
+    return false;
+  }
+}
+
+/** Nimmt einen User dauerhaft von der Impersonations-Automatik aus (nach /pardon) */
+export function addIdentityExempt(userId: number, addedBy: number, reason: string | null): void {
+  try {
+    const db = getDatabase();
+    db.prepare(`
+      INSERT INTO identity_exempt (user_id, added_at, added_by, reason) VALUES (?,?,?,?)
+      ON CONFLICT(user_id) DO UPDATE SET added_at = excluded.added_at, added_by = excluded.added_by, reason = excluded.reason
+    `).run(userId, Date.now(), addedBy, reason);
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in addIdentityExempt:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Markiert Protokolleinträge eines Users als zurückgenommen */
+export function markIdentityEventsReverted(userId: number): void {
+  try {
+    const db = getDatabase();
+    db.prepare('UPDATE identity_events SET reverted = 1 WHERE user_id = ? AND action = ?').run(userId, 'ban');
+    db.prepare('UPDATE pending_ban_log SET reverted = 1 WHERE user_id = ?').run(userId);
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in markIdentityEventsReverted:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Alle automatischen Sperren aus der Impersonations-Erkennung, neueste zuerst */
+export function getIdentityBans(limit: number = 50): any[] {
+  try {
+    const db = getDatabase();
+    return db.prepare(`
+      SELECT * FROM identity_events WHERE action = 'ban'
+      ORDER BY created_at DESC LIMIT ?
+    `).all(limit);
+  } catch {
+    return [];
+  }
+}
+
+/** Protokolliert eine Sperre, die aus der Pending-Username-Liste entstanden ist */
+export function logPendingBan(
+  userId: number,
+  username: string,
+  chatId: string | null,
+  source: string,
+  reason: string | null,
+  groupsBanned: number
+): void {
+  try {
+    const db = getDatabase();
+    db.prepare(`
+      INSERT INTO pending_ban_log (created_at, user_id, username, chat_id, source, reason, groups_banned)
+      VALUES (?,?,?,?,?,?,?)
+    `).run(Date.now(), userId, username, chatId, source, reason, groupsBanned);
+  } catch (error: unknown) {
+    console.error('[DB] Fehler beim Schreiben von pending_ban_log:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Alle Sperren aus der Pending-Liste, neueste zuerst */
+export function getPendingBanLog(limit: number = 100): any[] {
+  try {
+    const db = getDatabase();
+    return db.prepare(`SELECT * FROM pending_ban_log ORDER BY created_at DESC LIMIT ?`).all(limit);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * In wie vielen verwalteten Gruppen ein Ban für diesen User erfolgreich
+ * protokolliert wurde. Grundlage für die Entscheidung, ob ein Ban vollständig war.
+ */
+export function getBannedGroupCount(userId: number): number {
+  try {
+    const db = getDatabase();
+    const row = db.prepare(`
+      SELECT COUNT(DISTINCT a.chat_id) c
+      FROM actions a
+      JOIN groups g ON g.chat_id = a.chat_id AND g.status = 'managed'
+      WHERE a.user_id = ? AND a.action = 'ban'
+    `).get(userId) as { c: number } | undefined;
+    return row?.c ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 export function getRecentActions(userId: number, limit: number = 10): Action[] {

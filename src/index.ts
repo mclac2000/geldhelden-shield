@@ -369,6 +369,43 @@ async function handleJoinEvent(
     }
   }
 
+  // VORGEMERKTE USERNAME-SPERREN: Ein Admin hat /ban @name für einen damals
+  // unbekannten User abgesetzt. Jetzt ist der User sichtbar — Zusage einlösen.
+  {
+    const { checkPendingUsernameBan } = await import('./identityGuard');
+    const pendingHandled = await checkPendingUsernameBan(
+      ctx.telegram,
+      userId,
+      userInfo.username,
+      chatId,
+      'join'
+    );
+    if (pendingHandled) {
+      lastJoinEvent = { userId, chatId, source, timestamp, decision: 'action', action: 'ban', reason: 'pending-username-blacklist' };
+      return; // Skip rest of processing
+    }
+  }
+
+  // IDENTITÄTS-TÄUSCHUNG: Profilfoto-Abgleich + Namensanalyse.
+  // Ban nur bei Beweis (identisches Foto oder Name + Täuschungsmerkmal),
+  // sonst nur Alarm — Namensähnlichkeit allein ist kein Beweis.
+  {
+    const { guardIdentity } = await import('./identityGuard');
+    const guard = await guardIdentity(
+      ctx,
+      ctx.telegram,
+      userId,
+      chatId,
+      title || 'Unbekannt',
+      { username: userInfo.username, firstName: userInfo.firstName, lastName: userInfo.lastName },
+      'join'
+    );
+    if (guard.handled) {
+      lastJoinEvent = { userId, chatId, source, timestamp, decision: 'action', action: 'ban', reason: 'impersonation' };
+      return; // Skip rest of processing
+    }
+  }
+
   // Erfasse User in Baseline (nur managed)
         saveBaselineMember(
           chatId,
@@ -511,34 +548,10 @@ async function evaluateRiskIfManaged(
           // Prüfe ob User bereits beobachtet wird
           const userObserved = isUserObserved(userId);
           
-          // ANTI-IMPERSONATION: Prüfe ob User Name/Username gegen geschützte Namen ähnlich ist
-          const impersonationCheck = checkImpersonation(
-    userInfo.firstName,
-    userInfo.lastName,
-    userInfo.username,
-            config.protectedNames,
-            config.impersonationSimilarityThreshold
-          );
-          
-          if (impersonationCheck.isImpersonation && impersonationCheck.matchedName) {
-    const hasRecentWarning = hasRecentImpersonationWarning(userId, 24);
-            if (!hasRecentWarning) {
-              recordImpersonationWarning(userId, chatId);
-              await sendImpersonationWarning(
-                ctx,
-                userId,
-                chatId,
-        title,
-                impersonationCheck.matchedName,
-                impersonationCheck.similarity,
-        userInfo
-      );
-              console.log(`[Impersonation] User ${userId} mögliche Identitäts-Täuschung: Ähnlich zu "${impersonationCheck.matchedName}" (${impersonationCheck.similarity.toFixed(1)}% Ähnlichkeit)`);
-            } else {
-              console.log(`[Impersonation] User ${userId} hat kürzlich Impersonation-Warnung - überspringe (Anti-Spam)`);
-            }
-          }
-          
+          // ANTI-IMPERSONATION läuft seit 09/2026 über identityGuard.guardIdentity()
+          // und wurde bereits weiter oben in handleJoinEvent ausgeführt (inkl.
+          // Profilfoto-Abgleich und Protokollierung). Hier bewusst kein zweiter Aufruf.
+
           // ESKALATIONSLOGIK: Prüfe ob beobachteter User eine Eskalation auslöst
           if (userObserved) {
     const hasRecentEscal = hasRecentEscalation(userId, 24);
@@ -1227,6 +1240,60 @@ bot.command('clearref', async (ctx: Context) => {
   });
 });
 
+// Command: /identity [bans|alarms|pending|<user_id>]
+// Protokoll der Impersonations-Erkennung. Jede automatische Sperre ist hier
+// nachvollziehbar und über den Button in der Meldung bzw. /pardon rücknehmbar.
+bot.command('identity', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'identity', async (ctx) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const arg = (text.split(' ')[1] || 'bans').trim();
+    const { getIdentityBans, getPendingBanLog, getNameHistory, getDatabase } = await import('./db');
+
+    const fmt = (ts: number) => new Date(ts).toISOString().replace('T', ' ').substring(0, 16);
+    let msg = '';
+
+    if (/^\d+$/.test(arg)) {
+      const uid = parseInt(arg, 10);
+      const hist = getNameHistory(uid, 10);
+      msg = `🔎 <b>Identitäts-Historie für <code>${uid}</code></b>\n\n`;
+      if (hist.length === 0) {
+        msg += 'Keine Namens-Historie erfasst.';
+      } else {
+        for (const h of hist) {
+          msg += `• ${fmt(h.seen_at)} — ${h.first_name || ''} ${h.last_name || ''} (@${h.username || '-'})\n`;
+        }
+      }
+    } else if (arg === 'pending') {
+      const rows = getPendingBanLog(20);
+      msg = `📋 <b>Sperren aus der Vormerk-Liste</b> (${rows.length})\n\n`;
+      if (rows.length === 0) msg += 'Noch keine.';
+      for (const r of rows) {
+        msg += `• ${fmt(r.created_at)} @${r.username} → <code>${r.user_id}</code>, ${r.groups_banned} Gruppen (${r.source})\n`;
+      }
+    } else if (arg === 'alarms') {
+      const db = getDatabase();
+      const rows = db.prepare(`SELECT * FROM identity_events WHERE action='alarm' ORDER BY created_at DESC LIMIT 20`).all() as any[];
+      msg = `⚠️ <b>Impersonations-Verdachtsfälle</b> (${rows.length})\n\n`;
+      if (rows.length === 0) msg += 'Keine.';
+      for (const r of rows) {
+        msg += `• ${fmt(r.created_at)} <code>${r.user_id}</code> — ${r.reason}\n`;
+      }
+    } else {
+      const rows = getIdentityBans(20);
+      msg = `🚫 <b>Automatische Impersonations-Sperren</b> (${rows.length})\n\n`;
+      if (rows.length === 0) msg += 'Keine.';
+      for (const r of rows) {
+        const ev = [r.photo_match ? 'Foto' : null, r.mixed_script ? 'Schriftmix' : null, r.invisible_chars ? 'unsichtbar' : null]
+          .filter(Boolean).join('+');
+        msg += `• ${fmt(r.created_at)} <code>${r.user_id}</code> [${ev}] ${r.reason}\n`;
+      }
+      msg += `\n<i>Rücknahme: /pardon &lt;user_id&gt;</i>`;
+    }
+
+    await ctx.reply(msg.substring(0, 4000), { parse_mode: 'HTML' });
+  });
+});
+
 // Command: /unban <user_id|@username>
 bot.command('unban', async (ctx: Context) => {
   await handleAdminCommand(ctx, 'unban', async (ctx, ...args) => {
@@ -1486,8 +1553,50 @@ bot.command('send_meetup_poll', async (ctx: Context) => {
 });
 
 // Event: Nachrichten (für Baseline-Erfassung + Moderation)
-bot.on('message', async (ctx: Context) => {
+bot.on('message', async (ctx: Context, next) => {
   try {
+    // IDENTITÄTS-PRÜFUNG bei Nachrichten.
+    // Läuft bewusst NICHT bei jeder Nachricht, sondern nur wenn der User neu ist
+    // oder sich umbenannt hat — sonst wären es zehntausende getChat-Aufrufe.
+    // Genau dieser Pfad schließt die Lücke "unauffällig beitreten, später umbenennen".
+    if (ctx.from && !ctx.from.is_bot && ctx.chat && ctx.chat.type !== 'private') {
+      try {
+        const { recordNameSnapshot } = await import('./db');
+        const nameState = recordNameSnapshot(
+          ctx.from.id,
+          ctx.from.username || null,
+          ctx.from.first_name || null,
+          ctx.from.last_name || null
+        );
+
+        if (nameState !== 'unchanged') {
+          const chatIdStr = String(ctx.chat.id);
+          const chatTitle = 'title' in ctx.chat ? ctx.chat.title || '' : '';
+
+          const { checkPendingUsernameBan, guardIdentity } = await import('./identityGuard');
+
+          const pendingHandled = await checkPendingUsernameBan(
+            ctx.telegram, ctx.from.id, ctx.from.username, chatIdStr,
+            nameState === 'renamed' ? 'rename' : 'message'
+          );
+
+          if (!pendingHandled) {
+            if (nameState === 'renamed') {
+              console.log(`[Identity][RENAME] user=${ctx.from.id} neuer Name: ${ctx.from.first_name || ''} ${ctx.from.last_name || ''} (@${ctx.from.username || '-'})`);
+            }
+            await guardIdentity(
+              ctx, ctx.telegram, ctx.from.id, chatIdStr, chatTitle,
+              { username: ctx.from.username, firstName: ctx.from.first_name, lastName: ctx.from.last_name },
+              nameState === 'renamed' ? 'rename' : 'message'
+            );
+          }
+        }
+      } catch (identityError: unknown) {
+        // Identitätsprüfung darf die Nachrichtenverarbeitung nie blockieren
+        console.error('[Identity][MESSAGE] Fehler:', identityError instanceof Error ? identityError.message : String(identityError));
+      }
+    }
+
     // Service-Message-Cleanup (Prompt F) - ZUERST, aber nach interner Verarbeitung
     const { cleanupServiceMessages } = await import('./serviceCleanup');
     await cleanupServiceMessages(ctx);
@@ -1567,6 +1676,18 @@ bot.on('message', async (ctx: Context) => {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error('[ERROR][MESSAGE_HANDLER] message:', errorMessage);
     // Kein weiterwerfen - Event-Handler darf Bot nicht stoppen
+  } finally {
+    // WICHTIG: Middleware-Kette fortsetzen.
+    // Ohne next() endete die Verarbeitung hier — dadurch waren alle nachgelagert
+    // registrierten Handler (bot.on('text'), /video_status, /video_open,
+    // /video_mine, /video_stats) unerreichbar.
+    // Im finally-Block, damit auch die frühen returns der Moderationslogik
+    // die Kette nicht abschneiden.
+    try {
+      await next();
+    } catch (nextError: unknown) {
+      console.error('[ERROR][MESSAGE_HANDLER] next():', nextError instanceof Error ? nextError.message : String(nextError));
+    }
   }
 });
 
@@ -1589,7 +1710,7 @@ bot.on('edited_message', async (ctx: Context) => {
 });
 
 // Fallback: Text-Phrase "shield whereami" für /whereami
-bot.on('text', async (ctx: Context) => {
+bot.on('text', async (ctx: Context, next) => {
   try {
     if (!ctx.message || !('text' in ctx.message)) return;
     
@@ -1627,62 +1748,31 @@ bot.on('text', async (ctx: Context) => {
       return;
     }
 
-    // TEAM-MITGLIED-Protection: Prüfe ob User Admin/Creator in der Gruppe ist
-    const adminCheck = await isUserAdminOrCreatorInGroup(chatId, userId, ctx.telegram);
-    if (adminCheck.isAdmin) {
-      return; // Team-Mitglieder werden nicht eskaliert und nicht auf Impersonation geprüft
-    }
-    
-    // ANTI-IMPERSONATION: Prüfe ob User Name/Username gegen geschützte Namen ähnlich ist
-    const impersonationCheck = checkImpersonation(
-      ctx.from.first_name,
-      ctx.from.last_name,
-      ctx.from.username,
-      config.protectedNames,
-      config.impersonationSimilarityThreshold
-    );
-    
-    if (impersonationCheck.isImpersonation && impersonationCheck.matchedName) {
-      // Prüfe ob User kürzlich bereits eine Impersonation-Warnung erhalten hat (Anti-Spam)
-      const hasRecentWarning = hasRecentImpersonationWarning(userId, 24); // 24 Stunden Zeitfenster
-      
-      if (!hasRecentWarning) {
-        // Speichere Impersonation-Warnung (Anti-Spam)
-        recordImpersonationWarning(userId, chatId);
-        
-        // Sende Impersonation-Warnungs-Log
-        await sendImpersonationWarning(
-          ctx,
-          userId,
-          chatId,
-          title || 'Unbekannt',
-          impersonationCheck.matchedName,
-          impersonationCheck.similarity,
-          {
-            username: ctx.from.username,
-            firstName: ctx.from.first_name,
-            lastName: ctx.from.last_name,
-          }
-        );
-        
-        console.log(`[Impersonation] User ${userId} mögliche Identitäts-Täuschung: Ähnlich zu "${impersonationCheck.matchedName}" (${impersonationCheck.similarity.toFixed(1)}% Ähnlichkeit)`);
-      } else {
-        console.log(`[Impersonation] User ${userId} hat kürzlich Impersonation-Warnung - überspringe (Anti-Spam)`);
-      }
-    }
-    
-    // Prüfe ob User beobachtet wird
+    // ANTI-IMPERSONATION läuft seit 09/2026 über identityGuard.guardIdentity()
+    // im message-Handler — dort nur bei neuen Usern und bei Umbenennungen, um die
+    // Zahl der getChat-Aufrufe zu begrenzen. Hier bewusst kein zweiter Aufruf.
+
+    // REIHENFOLGE: Erst die billigen DB-Prüfungen, dann der API-Call.
+    // Dieser Handler war bis 09/2026 unerreichbar (fehlendes next() im
+    // message-Handler). Stünde der getChatMember-Aufruf wie zuvor an erster
+    // Stelle, gäbe es jetzt einen Telegram-API-Call pro Textnachricht.
     const userObserved = isUserObserved(userId);
     if (!userObserved) {
       return; // Nur beobachtete User werden eskaliert
     }
-    
+
     // Prüfe ob User kürzlich bereits eskaliert wurde (Anti-Spam)
     const hasRecentEscal = hasRecentEscalation(userId, 24); // 24 Stunden Zeitfenster
     if (hasRecentEscal) {
       return; // Anti-Spam: Überspringe wenn kürzlich eskaliert
     }
-    
+
+    // TEAM-MITGLIED-Protection: Prüfe ob User Admin/Creator in der Gruppe ist
+    const adminCheck = await isUserAdminOrCreatorInGroup(chatId, userId, ctx.telegram);
+    if (adminCheck.isAdmin) {
+      return; // Team-Mitglieder werden nicht eskaliert
+    }
+
     // Aktivität erkannt → Eskalation auslösen
     const joinCount24h = getJoinCount24h(userId);
     
@@ -1708,6 +1798,14 @@ bot.on('text', async (ctx: Context) => {
   } catch (error: any) {
     // Leise ignorieren - Eskalationslogik soll Bot nicht stoppen
     console.log(`[Escalation] Fehler bei Aktivitäts-Erkennung:`, error.message);
+  } finally {
+    // Kette fortsetzen, damit die nachgelagert registrierten Video-Kommandos
+    // (/video_status, /video_open, /video_mine, /video_stats) erreichbar werden.
+    try {
+      await next();
+    } catch (nextError: unknown) {
+      console.error('[ERROR][TEXT_HANDLER] next():', nextError instanceof Error ? nextError.message : String(nextError));
+    }
   }
 });
 
@@ -1724,7 +1822,48 @@ bot.on('callback_query', async (ctx: Context) => {
       await handleVideoCallback(ctx);
       return;
     }
-    
+
+    // Rücknahme einer automatischen Sperre (Format "pardon_user:userId")
+    // Jede automatische Impersonations-Sperre ist damit mit einem Klick reversibel.
+    if (data.startsWith('pardon_user:')) {
+      if (!ctx.from || !isAdmin(ctx.from.id)) {
+        await ctx.answerCbQuery('❌ Du bist kein Administrator');
+        return;
+      }
+      const pardonId = parseInt(data.split(':')[1], 10);
+      if (isNaN(pardonId)) {
+        await ctx.answerCbQuery('❌ Ungültige User-ID');
+        return;
+      }
+      await ctx.answerCbQuery('⏳ Hebe Sperre auf...');
+      try {
+        const { removeFromBlacklist, updateUserStatus, addIdentityExempt, markIdentityEventsReverted } = await import('./db');
+        const { unbanUserInAllGroups } = await import('./telegram');
+        removeFromBlacklist(pardonId);
+        updateUserStatus(pardonId, 'ok');
+        // Dauerhafte Ausnahme, sonst würde die Automatik denselben User beim
+        // nächsten Beitritt sofort wieder sperren.
+        addIdentityExempt(pardonId, ctx.from.id, 'Sperre durch Admin aufgehoben');
+        markIdentityEventsReverted(pardonId);
+        const res = await unbanUserInAllGroups(pardonId, `Sperre aufgehoben durch Admin ${ctx.from.id}`);
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+        await sendToAdminLogChat(
+          `↩️ <b>Sperre aufgehoben</b>\n\n` +
+            `🆔 User ID: <code>${pardonId}</code>\n` +
+            `👤 Durch: ${ctx.from.username || ctx.from.first_name || 'Admin'} (<code>${ctx.from.id}</code>)\n` +
+            `✅ Entsperrt in ${res?.success ?? 0} Gruppen.\n` +
+            `🛡 Dauerhaft von der Impersonations-Automatik ausgenommen.`,
+          ctx,
+          true
+        );
+        console.log(`[Identity][PARDON] user=${pardonId} durch admin=${ctx.from.id}`);
+      } catch (error: unknown) {
+        console.error('[Identity][PARDON] Fehler:', error instanceof Error ? error.message : String(error));
+        await ctx.answerCbQuery('❌ Fehler beim Aufheben der Sperre');
+      }
+      return;
+    }
+
     // Parse Callback-Data: Format "action:userId:chatId"
     const parts = data.split(':');
     if (parts.length < 3) {
@@ -1769,12 +1908,13 @@ bot.on('callback_query', async (ctx: Context) => {
       const adminName = ctx.from.username || ctx.from.first_name || 'Unbekannt';
       const reason = `Manuell durch Admin ${ctx.from.id} (${adminName}): Ban-Button in Join-Log`;
       const { banUserGlobally } = await import('./telegram');
-      const banResult = await banUserGlobally(userId, reason);
-      
+      // force = true: der Admin hat bewusst auf den Knopf gedrückt.
+      const banResult = await banUserGlobally(userId, reason, true);
+
       if (banResult.skipped) {
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
         await sendToAdminLogChat(
-          `⚠️ Bann blockiert: ${banResult.skipReason === 'Admin-User' ? 'Admin-User' : 'Team-Mitglied'}`,
+          `⚠️ Bann blockiert: ${banResult.skipReason || 'unbekannter Grund'}`,
           ctx,
           true
         );
@@ -2178,7 +2318,10 @@ async function main() {
     // Starte Bot NACH erfolgreichen Checks
     console.log('[Startup] Starte Bot mit Long Polling...');
     await bot.launch({
-      allowedUpdates: ['message', 'my_chat_member', 'chat_member', 'callback_query', 'channel_post'],
+      // 'edited_message' ergänzt (09/2026): der edited_message-Handler war registriert,
+      // bekam aber nie Updates — Scam-Check auf nachträglich bearbeitete Nachrichten
+      // griff dadurch nicht.
+      allowedUpdates: ['message', 'edited_message', 'my_chat_member', 'chat_member', 'callback_query', 'channel_post'],
     });
     
     console.log('[Startup] ✅ Bot erfolgreich gestartet!');

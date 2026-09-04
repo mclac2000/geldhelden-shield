@@ -195,12 +195,30 @@ export async function handleBanCommand(ctx: Context, userIdStr?: string): Promis
       
       // Prüfe ob User bereits bekannt ist
       const knownUserIds = getUsersByUsername(username);
-      
+
+      // Zusätzlicher Auflösungsversuch über die Telegram-API (09/2026).
+      // Nur ein Bonus: getChat('@name') funktioniert für Nutzer meist NICHT
+      // ("chat not found"), solange der Bot den Account nicht kennt. Die
+      // Datenbank-Suche oben bleibt der Hauptweg, die Pending-Liste der Rückfall.
+      if (knownUserIds.length === 0) {
+        try {
+          const resolved: any = await ctx.telegram.getChat(`@${username}`);
+          if (resolved && typeof resolved.id === 'number' && resolved.id > 0 && resolved.type === 'private') {
+            knownUserIds.push(resolved.id);
+            console.log(`[BAN] Username @${username} über getChat aufgelöst zu ID ${resolved.id}`);
+          }
+        } catch {
+          // Erwarteter Normalfall — kein Fehler, es geht mit der Pending-Liste weiter
+        }
+      }
+
       if (knownUserIds.length > 0) {
         // User ist bekannt - banne sofort
         let bannedCount = 0;
         for (const uid of knownUserIds) {
-          const result = await banUserGlobally(uid, `Username-Ban: @${username}`);
+          // force = true: ein manueller Admin-Ban darf nie an der
+          // Wiederholungsbremse scheitern (sonst meldet der Bot "0 gebannt").
+          const result = await banUserGlobally(uid, `Username-Ban: @${username}`, true);
           if (result.success) {
             bannedCount++;
           }
@@ -842,28 +860,30 @@ export async function handlePanicCommand(ctx: Context, action?: string): Promise
     return;
   }
 
-  const { config } = await import('./config');
+  const { isPanicMode, setPanicMode } = await import('./config');
   let newPanicMode: boolean;
-  
+
   if (action === 'on') {
     newPanicMode = true;
   } else if (action === 'off') {
     newPanicMode = false;
   } else {
     // Toggle wenn kein Parameter
-    newPanicMode = !config.panicMode;
+    newPanicMode = !isPanicMode();
   }
-  
-  // Setze Panic-Mode (über Environment Variable - muss in .env gesetzt werden)
-  // Für jetzt: Log nur
+
+  // Der Schalter wirkt jetzt SOFORT und ohne Neustart (09/2026).
+  // Vorher wurde hier nur geloggt — es gab damit keinen wirksamen Not-Aus.
+  setPanicMode(newPanicMode);
   console.log(`[PANIC] Panic-Mode ${newPanicMode ? 'AKTIVIERT' : 'DEAKTIVIERT'} durch Admin ${ctx.from.id}`);
-  
+
   await ctx.reply(
     `🧯 <b>Panic-Mode ${newPanicMode ? 'AKTIVIERT' : 'DEAKTIVIERT'}</b>\n\n` +
     `${newPanicMode ? '⚠️' : '✅'} Auto-Bans: ${newPanicMode ? 'GESTOPPT' : 'AKTIV'}\n` +
     `${newPanicMode ? '⚠️' : '✅'} Cluster-Eskalation: ${newPanicMode ? 'GESTOPPT' : 'AKTIV'}\n` +
+    `${newPanicMode ? '⚠️' : '✅'} Impersonations-Sperren: ${newPanicMode ? 'GESTOPPT' : 'AKTIV'}\n` +
     `${newPanicMode ? '✅' : '⚠️'} Logs + Beobachtung: ${newPanicMode ? 'AKTIV' : 'NORMAL'}\n\n` +
-    `ℹ️ <i>Hinweis: Panic-Mode muss in .env gesetzt werden (PANIC_MODE=true/false)</i>`,
+    `ℹ️ <i>Wirkt sofort. Gilt bis zum nächsten Neustart des Bots — danach zählt wieder PANIC_MODE aus der .env.</i>`,
     { parse_mode: 'HTML' }
   );
   

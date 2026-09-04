@@ -118,13 +118,21 @@ Die `.env` Datei im Projektroot ist bereits vorbereitet und enthält den `BOT_TO
 cp .env.example .env
 ```
 
-Die `.env` Datei enthält bereits:
+Trage den Bot-Token von @BotFather ein:
 ```
-BOT_TOKEN=7956976212:AAGwNWFw8IKhWZ-SqYu31HI-Sj_FNySVcLY
+BOT_TOKEN=<dein_token_von_botfather>
 ADMIN_IDS=
 ADMIN_LOG_CHAT=
 ACTION_MODE=restrict
 ```
+
+> ⚠️ **Der Bot-Token gehört NIEMALS ins Repository.**
+> Wer ihn hat, kann den Bot vollständig übernehmen: in allen Gruppen als Admin
+> agieren, Mitglieder bannen, Nachrichten lesen und im Namen des Bots posten.
+> Bis 09/2026 stand hier ein echter Token im Klartext. Er wurde widerrufen —
+> **er steht aber weiterhin in der Git-Historie und lässt sich dort nicht
+> entfernen.** Ein einmal committeter Token ist dauerhaft verbrannt; die einzige
+> wirksame Maßnahme ist `/revoke` bei @BotFather. `.env` steht in `.gitignore`.
 
 ### Schritt 3: Telegram-IDs automatisch abrufen
 
@@ -162,7 +170,7 @@ ADMIN_LOG_CHAT=-1001234567890
 **Kopiere diese Werte** und trage sie in deine `.env` Datei ein:
 
 ```env
-BOT_TOKEN=7956976212:AAGwNWFw8IKhWZ-SqYu31HI-Sj_FNySVcLY
+BOT_TOKEN=<dein_token_von_botfather>
 ADMIN_IDS=123456789,987654321
 ADMIN_LOG_CHAT=-1001234567890
 ACTION_MODE=restrict

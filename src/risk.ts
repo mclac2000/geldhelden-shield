@@ -12,7 +12,7 @@ import {
   getAllUsersWithRiskScore,
   getGroup,
 } from './db';
-import { config } from './config';
+import { config, isPanicMode } from './config';
 import { Context } from 'telegraf';
 import { restrictUser, banUser, logAdmin, isUserAdminOrCreatorInGroup } from './telegram';
 import { isAdmin } from './admin';
@@ -347,7 +347,7 @@ export async function assessJoinRisk(
   // Führe Aktion aus basierend auf Score
   if (shouldBan && !alreadyBanned) {
     // Panic-Mode Check (Prompt 6): Stoppt Auto-Bans
-    if (config.panicMode) {
+    if (isPanicMode()) {
       console.log(`[RISK][PANIC] Auto-Ban gestoppt für User ${userId} (Panic-Mode aktiv)`);
       await logAdmin(
         {

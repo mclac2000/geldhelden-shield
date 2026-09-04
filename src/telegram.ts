@@ -1029,25 +1029,57 @@ export async function kickUser(
  * Globaler Ban - Banned User in allen managed Gruppen und fügt zur Blacklist hinzu
  * Prüft Admin-Status und Team-Mitglied-Status vor dem Ban
  */
+/**
+ * Nach wie vielen Stunden ein bereits gebannter User erneut in allen Gruppen
+ * gebannt werden darf. Verhindert die Ban-Schleife, erlaubt aber Nachholen
+ * fehlgeschlagener Bans.
+ */
+const BAN_RECHECK_HOURS = 12;
+
 export async function banUserGlobally(
   userId: number,
-  reason: string = 'global ban'
+  reason: string = 'global ban',
+  /** true = Wiederholungsbremse überspringen (für manuelle Admin-Bans) */
+  force: boolean = false
 ): Promise<{ success: boolean; groups: number; skipped: boolean; skipReason?: string }> {
   const { isAdmin } = await import('./admin');
-  const { getManagedGroups, addToBlacklist, isBlacklisted, getOrCreateUser, updateUserStatus, isTeamMember } = await import('./db');
-  
+  const { getManagedGroups, addToBlacklist, isBlacklisted, getOrCreateUser, updateUserStatus, isTeamMember, getLastBanAttemptAt, getBannedGroupCount } = await import('./db');
+
   // 1. Admin-Check
   if (isAdmin(userId)) {
     console.log(`[SKIP][ADMIN] user=${userId}`);
     return { success: false, groups: 0, skipped: true, skipReason: 'Admin-User' };
   }
-  
+
   // 2. Team-Mitglied-Check: Prüfe ob User im Team-Whitelist ist
   if (isTeamMember(userId)) {
     console.log(`[SKIP][TEAM-MEMBER] user=${userId}`);
     return { success: false, groups: 0, skipped: true, skipReason: 'Team-Mitglied' };
   }
-  
+
+  // 2b. Wiederholungs-Bremse: Bereits gebannte User nicht erneut in allen Gruppen
+  //     bannen. Ohne diese Prüfung lief der Cluster-Scan alle paar Minuten erneut
+  //     über dieselben User — 1.017.043 Ban-Aktionen bei 20.052 eindeutigen
+  //     User/Gruppe-Paaren und ein reales Flood-Limit-Risiko.
+  //     Nach BAN_RECHECK_HOURS wird wieder zugelassen, damit fehlgeschlagene Bans
+  //     (z.B. wegen 429) nicht dauerhaft offen bleiben.
+  if (!force && isBlacklisted(userId)) {
+    const lastAttempt = getLastBanAttemptAt(userId);
+    if (lastAttempt !== null && Date.now() - lastAttempt < BAN_RECHECK_HOURS * 3600 * 1000) {
+      // Bremse greift nur, wenn der User auch tatsächlich schon in (fast) allen
+      // Gruppen gesperrt ist. Ein Ban, der beim ersten Anlauf überwiegend
+      // fehlgeschlagen ist, wird sofort erneut versucht.
+      const coverage = getBannedGroupCount(userId);
+      const total = getManagedGroups().length;
+      if (total === 0 || coverage >= total - 2) {
+        const hours = ((Date.now() - lastAttempt) / 3600000).toFixed(1);
+        console.log(`[SKIP][ALREADY-BANNED] user=${userId} in ${coverage}/${total} Gruppen, letzter Versuch vor ${hours}h`);
+        return { success: false, groups: 0, skipped: true, skipReason: 'bereits gebannt' };
+      }
+      console.log(`[RETRY][INCOMPLETE-BAN] user=${userId} nur ${coverage}/${total} Gruppen — Ban wird wiederholt`);
+    }
+  }
+
   // 3. User zur Blacklist hinzufügen (falls noch nicht vorhanden)
   if (!isBlacklisted(userId)) {
     addToBlacklist(userId, 0, reason); // banned_by = 0 für automatische Bans
@@ -1470,23 +1502,15 @@ function calculateLevenshteinSimilarity(str1: string, str2: string): number {
 }
 
 /**
- * Normalisiert Zeichenersetzungen (l/I, o/0, etc.)
- */
-function normalizeSimilarChars(str: string): string {
-  return str
-    .replace(/[Il1|]/g, 'i')  // l, I, 1, | → i
-    .replace(/[o0]/g, 'o')    // o, 0 → o
-    .replace(/[a@]/g, 'a')    // a, @ → a
-    .replace(/[e3]/g, 'e')    // e, 3 → e
-    .replace(/[s5$]/g, 's')   // s, 5, $ → s
-    .replace(/[z2]/g, 'z')    // z, 2 → z
-    .toLowerCase()
-    .trim();
-}
-
-/**
- * Prüft ob ein User-Name/Username gegen geschützte Namen ähnlich ist
- * Returns: { isImpersonation: boolean, matchedName: string | null, similarity: number }
+ * Prüft ob ein User-Name/Username gegen geschützte Namen ähnlich ist.
+ *
+ * Die eigentliche Logik liegt seit 09/2026 in identity.ts. Diese Funktion bleibt
+ * als Schnittstelle für bestehende Aufrufer erhalten.
+ *
+ * WICHTIG: Ein Treffer hier ist ein VERDACHT, kein Beweis. "Marco" ist ein
+ * häufiger Vorname — eine Messung gegen die Produktionsdatenbank ergab 23 echte
+ * Mitglieder namens Marco. Für die Entscheidung, ob gebannt wird, immer
+ * decideImpersonation() aus identity.ts verwenden.
  */
 export function checkImpersonation(
   firstName: string | undefined,
@@ -1495,55 +1519,40 @@ export function checkImpersonation(
   protectedNames: string[],
   similarityThreshold: number
 ): { isImpersonation: boolean; matchedName: string | null; similarity: number } {
-  const displayName = `${firstName || ''} ${lastName || ''}`.trim();
-  const fullName = displayName || username || '';
-  
-  if (!fullName) {
-    return { isImpersonation: false, matchedName: null, similarity: 0 };
-  }
-  
-  const normalizedFullName = normalizeSimilarChars(fullName);
-  const normalizedUsername = username ? normalizeSimilarChars(username) : '';
-  
-  let maxSimilarity = 0;
-  let matchedName: string | null = null;
-  
-  // Prüfe gegen alle geschützten Namen
-  for (const protectedName of protectedNames) {
-    const normalizedProtected = normalizeSimilarChars(protectedName);
-    
-    // 1. Case-Insensitive Match (exakt)
-    if (normalizedFullName === normalizedProtected || 
-        (normalizedUsername && normalizedUsername === normalizedProtected)) {
-      return { isImpersonation: true, matchedName: protectedName, similarity: 100 };
-    }
-    
-    // 2. Enthält geschützten Begriff (Substring-Match)
-    if (normalizedFullName.includes(normalizedProtected) || 
-        normalizedProtected.includes(normalizedFullName) ||
-        (normalizedUsername && (normalizedUsername.includes(normalizedProtected) || normalizedProtected.includes(normalizedUsername)))) {
-      return { isImpersonation: true, matchedName: protectedName, similarity: 95 };
-    }
-    
-    // 3. Levenshtein-Ähnlichkeit
-    const similarityFullName = calculateLevenshteinSimilarity(fullName, protectedName);
-    const similarityUsername = username ? calculateLevenshteinSimilarity(username, protectedName) : 0;
-    const similarity = Math.max(similarityFullName, similarityUsername);
-    
-    if (similarity > maxSimilarity) {
-      maxSimilarity = similarity;
-      matchedName = protectedName;
-    }
-  }
-  
-  // Prüfe ob Ähnlichkeit über Schwelle liegt
-  const isImpersonation = maxSimilarity >= similarityThreshold;
-  
+  const { analyzeIdentity } = require('./identity') as typeof import('./identity');
+  const analysis = analyzeIdentity(firstName, lastName, username, protectedNames, similarityThreshold);
   return {
-    isImpersonation,
-    matchedName: isImpersonation ? matchedName : null,
-    similarity: maxSimilarity
+    isImpersonation: analysis.nameMatch,
+    matchedName: analysis.matchedName,
+    similarity: analysis.similarity,
   };
+}
+
+/**
+ * Holt den Profilfoto-Fingerabdruck eines Users über getChat().
+ *
+ * big_file_unique_id ist laut Telegram-API-Doku "supposed to be the same over time
+ * and for different bots" — zwei Accounts mit demselben Wert tragen dasselbe Bild.
+ *
+ * Gibt null zurück, wenn der User kein Foto hat ODER der Abruf fehlschlägt
+ * (Privatsphäre-Einstellungen, unbekannter Chat). Ein Fehlschlag darf NIE als
+ * Verdachtsmoment gewertet werden.
+ */
+export async function getProfilePhotoFingerprint(
+  telegram: any,
+  userId: number
+): Promise<{ fingerprint: string | null; bio: string | null; ok: boolean }> {
+  try {
+    const chat = await telegram.getChat(userId);
+    return {
+      fingerprint: chat?.photo?.big_file_unique_id || null,
+      bio: chat?.bio || null,
+      ok: true,
+    };
+  } catch (error: any) {
+    // Erwarteter Normalfall bei Privatsphäre-Einstellungen — kein Risikosignal.
+    return { fingerprint: null, bio: null, ok: false };
+  }
 }
 
 /**

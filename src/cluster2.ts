@@ -19,7 +19,7 @@ import {
 import { isAdmin } from './admin';
 import { isTeamMember } from './db';
 import { banUserGlobally, restrictUser, sendToAdminLogChat } from './telegram';
-import { config } from './config';
+import { config, isPanicMode } from './config';
 
 export type ClusterLevel = 1 | 2 | 3;
 
@@ -133,7 +133,7 @@ export async function checkClusterLevel(
       const savedClusterId = saveCluster(3, [userId], groups, true, `L3: ${groupCount} Gruppen in 24h - GLOBAL BAN`);
       
       // Panic-Mode Check (Prompt 6): Stoppt Auto-Bans
-      if (config.panicMode) {
+      if (isPanicMode()) {
         console.log(`[CLUSTER L3][PANIC] Auto-Ban gestoppt für User ${userId} (Panic-Mode aktiv)`);
         if (ctx) {
           await sendToAdminLogChat(
