@@ -219,7 +219,7 @@ Betroffen war nicht nur eine Logzeile:
 | Was dort hing | Folge |
 |---|---|
 | **Wochenbericht-Cron** (sonntags 20:00) | war **nie registriert** — es gab nie einen automatischen Wochenbericht |
-| **Baseline-Scan-Cron** (monatlich) | war **nie registriert**. `baseline_scans` enthält 42 Läufe, alle manuell, **der letzte vom 11.01.2026** — die Mitgliederbasis wurde seit fast acht Monaten nicht aufgefrischt |
+| **Baseline-Scan-Cron** (monatlich) | war **nie registriert** (siehe Einordnung unten — die Auswirkung ist kleiner, als der Name vermuten lässt) |
 | Bot-ID über `getMe` | nie ermittelt |
 | `sendStartupLog()` | nie gesendet |
 | einmaliger Wartungslauf beim Start | nie ausgeführt (der Stundentakt lief separat) |
@@ -231,6 +231,40 @@ Alles wurde vor `bot.launch()` gezogen und ist nachweislich aktiv:
 [1] Wochenreport-Job gestartet
 [1] Baseline-Scan-Job gestartet
 ```
+
+### Korrektur: Was der Baseline-Scan wirklich tut
+
+Ich hatte zunächst geschrieben, die Mitgliederbasis sei acht Monate lang nicht
+aufgefrischt worden. **Das war zu scharf formuliert.** Der nachgeholte Lauf am
+04.09.2026 zeigt es:
+
+```
+54 von 55 Gruppen in 31 Sekunden, 3 neue Mitglieder, 1 Fehler
+Basis vorher:  7.185 Mitglieder / 8.760 Einträge
+Basis nachher: 7.185 Mitglieder / 8.763 Einträge
+```
+
+Der Grund steht im Kopf von `scan.ts`: *„Erfasst sichtbare Mitglieder aus
+bekannten Quellen (Events, Nachrichten, Admins) — KEINE verbotenen API-Aufrufe
+wie getChatMembers."* Die Telegram-Bot-API erlaubt kein Auflisten aller
+Mitglieder. Der Scan holt live **nur `getChatAdministrators`**; alles andere
+liest er aus dem, was ohnehin schon in der Datenbank steht.
+
+**Was das bedeutet:**
+
+- Die eigentliche Mitgliederbasis entsteht **fortlaufend** aus Beitritten und
+  Nachrichten (`source='join'` bzw. `'message'`). Dieser Weg hat nie ausgesetzt.
+- Der Monats-Scan frischt im Wesentlichen die **Admin-Listen** auf. Sein Ausfall
+  war ärgerlich, aber nicht der Datenverlust, den der Name nahelegt.
+- Der Ausfall des **Wochenberichts** bleibt der schwerwiegendere der beiden:
+  Marco hat acht Monate lang keinen automatischen Bericht bekommen und konnte
+  deshalb nicht bemerken, dass etwas fehlt.
+
+**Nebenbefund:** `scan.ts` schreibt überhaupt keine Zeile in `baseline_scans` —
+das macht nur eine separate Funktion in `db.ts`, die der Scan nicht aufruft. Die
+Anzeige „letzter Scan: 11.01.2026" bleibt deshalb dauerhaft stehen, egal wie oft
+der Scan läuft. Als Kennzahl ist sie unbrauchbar und sollte entweder verdrahtet
+oder entfernt werden.
 
 **`checkAllGroupsOnStartup` ist dagegen entwarnt** — trotz Namen und
 Aufrufkommentar („Prüfe alle Gruppen und setze Status automatisch basierend auf
