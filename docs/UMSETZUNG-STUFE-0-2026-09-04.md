@@ -148,10 +148,14 @@ Alle vier neuen Tabellen sind angelegt. Der Bot verarbeitet Nachrichten (im Log:
 
 ### Bot-Token — widerrufen ✅, neuer Token fehlt noch ❗
 
-**Stand 04.09.2026, 05:00 Uhr:** Der alte Token wurde widerrufen (Telegram
+**Stand 04.09.2026, 05:05 Uhr:** Der alte Token wurde widerrufen (Telegram
 antwortet auf `getMe` mit `401: Unauthorized`). Das ist richtig so — aber der
-**neue Token steht noch nicht in der `.env`**, deshalb ist der Bot aktuell offline
-und der Container startet in einer Schleife neu.
+**neue Token steht noch nicht in der `.env`**, deshalb ist der Bot offline.
+
+Der Container wurde **angehalten** (`docker compose stop bot`), damit er nicht
+alle 20 Sekunden gegen denselben 401 neu startet und dabei einen etwaigen
+zweiten Fehler im Log-Rauschen unsichtbar macht. `set-token.sh` startet ihn
+wieder — aus dem angehaltenen Zustand heraus ohne Zusatzschritt.
 
 **Behebung — ein Befehl:**
 
