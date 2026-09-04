@@ -2389,6 +2389,17 @@ async function sendStartupLog(): Promise<void> {
 }
 
 // Startup: Status wird nur aus DB gelesen, keine Änderungen
+/**
+ * Lädt die Gruppenliste und protokolliert ihre Anzahl.
+ *
+ * WARNUNG ZUM NAMEN: Die Funktion prüft NICHTS und setzt KEINEN Status.
+ * Der frühere Aufrufkommentar ("Prüfe alle Gruppen und setze Status automatisch
+ * basierend auf Bot-Admin-Status") beschrieb eine Funktion, die es so nie gab.
+ * Sie stand zudem hinter bot.launch() und lief deshalb ohnehin nie.
+ *
+ * Wer hier echten Schutz erwartet, muss ihn erst bauen — der Status der Gruppen
+ * wird ausschließlich aus der Datenbank gelesen.
+ */
 async function checkAllGroupsOnStartup(botId: number) {
   try {
     console.log('[Startup][BOOT] Lade Gruppen aus Datenbank...');
@@ -2501,22 +2512,20 @@ async function main() {
       }, 20000);
     }
 
-    console.log('[Startup] Starte Bot mit Long Polling...');
-    await bot.launch({
-      // 'edited_message' ergänzt (09/2026): der edited_message-Handler war registriert,
-      // bekam aber nie Updates — Scam-Check auf nachträglich bearbeitete Nachrichten
-      // griff dadurch nicht.
-      allowedUpdates: ['message', 'edited_message', 'my_chat_member', 'chat_member', 'callback_query', 'channel_post'],
-    });
-    
-    // ACHTUNG: Ab hier wird im Long-Polling-Betrieb NICHTS mehr ausgeführt —
-    // bot.launch() löst nicht auf. Das betrifft den gesamten folgenden Block
-    // (Bot-ID über getMe, sendStartupLog, checkAllGroupsOnStartup) und war
-    // bereits vor 09/2026 so. Neuer Code gehört VOR bot.launch().
-    console.log('[Startup] ✅ Bot erfolgreich gestartet!');
-    console.log('[Startup] Bot läuft im Long Polling Modus');
-    
-    // KRITISCH: ERST NACH bot.launch() - Hole Bot-ID mit getMe()
+    // ------------------------------------------------------------------
+    // ALLES, WAS BEIM START LAUFEN MUSS, GEHÖRT VOR bot.launch().
+    //
+    // bot.launch() löst im Long-Polling-Betrieb nicht auf. Bis 09/2026 stand
+    // der folgende Block DAHINTER und wurde deshalb in keinem einzigen Start
+    // ausgeführt. Nachweisbar an zwei Dingen:
+    //   - "[Startup] ✅ Bot erfolgreich gestartet!" taucht in keinem Log auf
+    //   - baseline_scans enthält nur 42 manuelle Läufe, der letzte vom
+    //     11.01.2026 — der monatliche Scan-Cron war nie registriert
+    // Ebenfalls betroffen: der Wochenbericht (sonntags 20:00) und der
+    // einmalige Wartungslauf beim Start.
+    // ------------------------------------------------------------------
+
+    // Bot-ID ermitteln
     let BOT_ID: number;
     try {
       console.log('[Startup][BOOT] Ermittle Bot-ID mit getMe()...');
@@ -2525,25 +2534,21 @@ async function main() {
       console.log(`[Startup][BOOT] Bot-ID erfolgreich ermittelt: ${BOT_ID}`);
     } catch (error: any) {
       console.error('[Startup][BOOT] KRITISCHER FEHLER: Kann Bot-ID nicht ermitteln:', error.message);
-      // Startup abbrechen, wenn Bot-ID nicht ermittelt werden kann
       throw error;
     }
-    
-    // Sende Startup-Log
+
+    // Startup-Meldung in den Admin-Log-Chat
     await sendStartupLog();
-    
-    // ERST NACH getMe() - Prüfe alle Gruppen und setze Status automatisch basierend auf Bot-Admin-Status
-    // Übergib BOT_ID als Parameter (nicht intern holen)
+
+    // Gruppen laden (reines Logging, ändert keinen Status)
     await checkAllGroupsOnStartup(BOT_ID);
-    
-    // Führe Wartungsjob einmal beim Start aus
+
+    // Wartungsjob einmal sofort ausführen (der Stundentakt läuft separat)
     runMaintenanceJob().catch(err => {
       console.error('[Startup] Fehler beim ersten Wartungsjob:', err);
     });
-    
-    // Wochenreport: Jeden Sonntag um 20:00 Uhr
-    // Cron-Format: "Minute Stunde Tag Monat Wochentag"
-    // 0 = Sonntag, 20:00 = 20:00 Uhr
+
+    // Wochenreport: jeden Sonntag um 20:00 Uhr
     cron.schedule('0 20 * * 0', async () => {
       try {
         console.log('[Weekly] Starte automatischen Wochenreport...');
@@ -2554,13 +2559,10 @@ async function main() {
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error('[Weekly] Fehler beim automatischen Wochenreport:', errorMessage);
       }
-    }, {
-      timezone: config.timezone || 'Europe/Berlin'
-    });
+    }, { timezone: config.timezone || 'Europe/Berlin' });
     console.log('[Startup] Wochenreport-Job gestartet (jeden Sonntag um 20:00 Uhr)');
-    
-    // Baseline-Scan: 1× monatlich (am 1. des Monats um 02:00 Uhr)
-    // Cron-Format: "Minute Stunde Tag Monat Wochentag"
+
+    // Baseline-Scan: monatlich am 1. um 02:00 Uhr
     cron.schedule('0 2 1 * *', async () => {
       try {
         console.log('[Scan] Starte automatischen monatlichen Baseline-Scan...');
@@ -2571,11 +2573,22 @@ async function main() {
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error('[Scan] Fehler beim automatischen monatlichen Scan:', errorMessage);
       }
-    }, {
-      timezone: config.timezone || 'Europe/Berlin'
-    });
+    }, { timezone: config.timezone || 'Europe/Berlin' });
     console.log('[Startup] Baseline-Scan-Job gestartet (monatlich am 1. um 02:00 Uhr)');
 
+    console.log('[Startup] Starte Bot mit Long Polling...');
+    await bot.launch({
+      // 'edited_message' ergänzt (09/2026): der edited_message-Handler war registriert,
+      // bekam aber nie Updates — Scam-Check auf nachträglich bearbeitete Nachrichten
+      // griff dadurch nicht.
+      allowedUpdates: ['message', 'edited_message', 'my_chat_member', 'chat_member', 'callback_query', 'channel_post'],
+    });
+    
+    // ACHTUNG: Ab hier wird im Long-Polling-Betrieb NICHTS mehr ausgeführt —
+    // bot.launch() löst nicht auf. Neuer Startup-Code gehört ausnahmslos
+    // VOR den launch()-Aufruf.
+    console.log('[Startup] ✅ Bot erfolgreich gestartet!');
+    console.log('[Startup] Bot läuft im Long Polling Modus');
 
   } catch (error: any) {
     const errorMessage = error instanceof Error ? error.message : String(error);

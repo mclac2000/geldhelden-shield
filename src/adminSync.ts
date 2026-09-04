@@ -107,9 +107,18 @@ export async function syncAllAdmins(bot: Telegraf): Promise<{
   removed: number;
   errors: number;
 }> {
-  const allGroups = getAllGroups();
-  const managedGroups = allGroups.filter(g => isGroupManaged(String(g.chatId)));
-  
+  // Maßgeblich ist groups.status — dieselbe Liste, die auch Sperren, Scans und
+  // die Wellen-Erkennung verwenden (getManagedGroups()).
+  //
+  // Vorher lief hier isGroupManaged() aus groupConfig.ts. Das liest ein ANDERES
+  // Feld (group_config.managed) und liefert für Gruppen ohne Eintrag "true".
+  // Dadurch wurden auch deaktivierte Gruppen abgefragt, was bei jedem Lauf
+  // Fehler erzeugte ("member list is inaccessible" für einen deaktivierten
+  // Kanal). Dauerfehler in einem Bericht führen dazu, dass niemand mehr
+  // hinsieht, wenn ein echter Fehler dazukommt.
+  const { getManagedGroups } = await import('./db');
+  const managedGroups = getManagedGroups();
+
   let totalSynced = 0;
   let totalRemoved = 0;
   let totalErrors = 0;
