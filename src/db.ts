@@ -1065,6 +1065,28 @@ export function initDatabase(): any {
     }
   }
 
+  // Migration: Adminrechte-Status je Gruppe (09/2026)
+  //
+  // Eine Gruppe, die als "managed" gilt, in der der Bot aber KEIN Admin ist,
+  // ist gefährlicher als eine, die gar nicht in der Liste steht: Sie erscheint
+  // in jeder Übersicht als geschützt, obwohl dort weder gesperrt noch gelöscht
+  // werden kann. Deshalb wird der Status dauerhaft festgehalten und als eigene
+  // Kategorie ausgewiesen.
+  try {
+    db.exec(`ALTER TABLE groups ADD COLUMN bot_is_admin INTEGER;`);
+  } catch (error: any) {
+    if (!error.message.includes('duplicate column name')) {
+      console.warn('[DB] Migration Warnung (groups.bot_is_admin):', error.message);
+    }
+  }
+  try {
+    db.exec(`ALTER TABLE groups ADD COLUMN admin_checked_at INTEGER;`);
+  } catch (error: any) {
+    if (!error.message.includes('duplicate column name')) {
+      console.warn('[DB] Migration Warnung (groups.admin_checked_at):', error.message);
+    }
+  }
+
   // Migration: username-Spalte für Gruppen (für die Freigabeliste eigener Links)
   try {
     db.exec(`ALTER TABLE groups ADD COLUMN username TEXT;`);
@@ -3910,6 +3932,74 @@ export function saveBaselineScan(
   `);
   const result = stmt.run(chatId, scanType, Date.now(), membersCount, membersScanned, scanLimited ? 1 : 0);
   return result.lastInsertRowid as number;
+}
+
+// --- Adminrechte des Bots je Gruppe (09/2026) ---
+
+export interface GruppeAdminStatus {
+  chat_id: string;
+  title: string | null;
+  bot_is_admin: number | null;
+  admin_checked_at: number | null;
+  mitglieder: number;
+}
+
+export function setBotAdminStatus(chatId: string, isAdmin: boolean): void {
+  try {
+    getDatabase()
+      .prepare('UPDATE groups SET bot_is_admin = ?, admin_checked_at = ? WHERE chat_id = ?')
+      .run(isAdmin ? 1 : 0, Date.now(), chatId);
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in setBotAdminStatus:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+/**
+ * Verwaltete Gruppen, in denen der Bot NACHWEISLICH kein Admin ist.
+ * Dort greift der Schutz faktisch nicht — er kann weder sperren noch löschen.
+ */
+export function getGroupsWithoutAdminRights(): GruppeAdminStatus[] {
+  try {
+    return getDatabase().prepare(`
+      SELECT g.chat_id, g.title, g.bot_is_admin, g.admin_checked_at,
+             (SELECT COUNT(*) FROM baseline_members b WHERE b.chat_id = g.chat_id) AS mitglieder
+      FROM groups g
+      WHERE g.status = 'managed' AND g.bot_is_admin = 0
+      ORDER BY mitglieder DESC
+    `).all() as GruppeAdminStatus[];
+  } catch {
+    return [];
+  }
+}
+
+/** Alle verwalteten Gruppen mit ihrem Rechte-Status, für die Gruppenübersicht */
+export function getGroupsWithAdminStatus(): GruppeAdminStatus[] {
+  try {
+    return getDatabase().prepare(`
+      SELECT g.chat_id, g.title, g.bot_is_admin, g.admin_checked_at,
+             (SELECT COUNT(*) FROM baseline_members b WHERE b.chat_id = g.chat_id) AS mitglieder
+      FROM groups g
+      WHERE g.status = 'managed'
+      ORDER BY g.bot_is_admin ASC, mitglieder DESC
+    `).all() as GruppeAdminStatus[];
+  } catch {
+    return [];
+  }
+}
+
+/** Deaktivierte Gruppen (Bot ohne Zugriff oder bewusst abgeschaltet) */
+export function getDisabledGroups(): GruppeAdminStatus[] {
+  try {
+    return getDatabase().prepare(`
+      SELECT g.chat_id, g.title, g.bot_is_admin, g.admin_checked_at,
+             (SELECT COUNT(*) FROM baseline_members b WHERE b.chat_id = g.chat_id) AS mitglieder
+      FROM groups g
+      WHERE g.status = 'disabled'
+      ORDER BY mitglieder DESC
+    `).all() as GruppeAdminStatus[];
+  } catch {
+    return [];
+  }
 }
 
 // --- Lauf-Protokoll des Baseline-Scans (09/2026) ---

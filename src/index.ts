@@ -856,10 +856,11 @@ bot.command('health', async (ctx: Context) => {
     // Diese beiden Zeilen sind die Lehre aus 09/2026: Wochenbericht und
     // Baseline-Scan waren acht Monate lang nicht registriert, und nichts im
     // System hat es angezeigt.
-    const { getLastScanRun } = await import('./db');
+    const { getLastScanRun, getGroupsWithoutAdminRights } = await import('./db');
     const { pruefeJobs, ERWARTETE_JOBS } = await import('./jobRegistry');
     const jobs = pruefeJobs();
     const lauf = getLastScanRun();
+    const ohneRechte = getGroupsWithoutAdminRights();
 
     const jobZeile = jobs.ok
       ? `✅ Hintergrundjobs: ${Object.keys(ERWARTETE_JOBS).length}/${Object.keys(ERWARTETE_JOBS).length} registriert`
@@ -880,7 +881,10 @@ bot.command('health', async (ctx: Context) => {
       `🔄 Queue backlog: ${queueBacklog}\n` +
       `🔍 Active dedup fingerprints: ${dedupStats.activeFingerprints}\n\n` +
       `${jobZeile}\n` +
-      `${scanZeile}`,
+      `${scanZeile}\n` +
+      `${ohneRechte.length === 0
+        ? '🛡 Alle verwalteten Gruppen: Bot hat Adminrechte'
+        : `⚠️ ${ohneRechte.length} verwaltete Gruppe(n) OHNE Adminrechte — dort greift der Schutz nicht (/groups)`}`,
       { parse_mode: 'HTML' }
     );
   });
@@ -1165,11 +1169,54 @@ bot.command('pardon', async (ctx: Context) => {
 });
 
 // Command: /groups - Zeigt alle verwalteten Gruppen
+// Command: /groups — Gruppenübersicht nach Schutzstatus
+//
+// War bis 09/2026 ein Platzhalter ("Implementation missing"). Die entscheidende
+// Kategorie ist die mittlere: verwaltete Gruppen OHNE Adminrechte. Sie zählen
+// überall als geschützt, obwohl der Bot dort weder sperren noch löschen kann.
 bot.command('groups', async (ctx: Context) => {
-  await handleAdminCommand(ctx, 'groups', async (ctx, ...args) => {
-    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
-    const parts = text.split(' ').slice(1);
-    await handleGroupsCommand(ctx, parts[0]);
+  await handleAdminCommand(ctx, 'groups', async (ctx) => {
+    const { getGroupsWithAdminStatus, getDisabledGroups } = await import('./db');
+    const verwaltet = getGroupsWithAdminStatus();
+    const deaktiviert = getDisabledGroups();
+
+    const mitRechten = verwaltet.filter(g => g.bot_is_admin === 1);
+    const ohneRechte = verwaltet.filter(g => g.bot_is_admin === 0);
+    const ungeprueft = verwaltet.filter(g => g.bot_is_admin === null);
+
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const zeile = (g: any) => `• ${esc((g.title || g.chat_id).substring(0, 42))} (${g.mitglieder})`;
+
+    let msg = `📊 <b>Gruppenübersicht</b>\n\n`;
+
+    msg += `🛡 <b>Geschützt: ${mitRechten.length}</b>\n`;
+    msg += `<i>Bot ist Admin — Sperren und Löschen funktionieren.</i>\n\n`;
+
+    msg += `⚠️ <b>NICHT geschützt trotz Verwaltung: ${ohneRechte.length}</b>\n`;
+    if (ohneRechte.length === 0) {
+      msg += `<i>Keine. Gut so.</i>\n\n`;
+    } else {
+      msg += `<i>Bot ist dort kein Admin. Er kann weder sperren noch löschen — ` +
+        `die Gruppe zählt aber als verwaltet.</i>\n`;
+      msg += ohneRechte.map(zeile).join('\n') + '\n\n';
+    }
+
+    if (ungeprueft.length > 0) {
+      msg += `❔ <b>Rechte noch nicht geprüft: ${ungeprueft.length}</b>\n`;
+      msg += `<i>Die Prüfung läuft täglich um 03:30 und einmal nach jedem Start.</i>\n\n`;
+    }
+
+    msg += `⏸ <b>Deaktiviert: ${deaktiviert.length}</b>\n`;
+    if (deaktiviert.length > 0) {
+      msg += `<i>Kein Zugriff oder bewusst abgeschaltet.</i>\n`;
+      msg += deaktiviert.slice(0, 12).map(zeile).join('\n') + '\n';
+      if (deaktiviert.length > 12) msg += `… und ${deaktiviert.length - 12} weitere\n`;
+    }
+
+    msg += `\n<i>Zahl in Klammern = erfasste Mitglieder. ` +
+      `Rechte geben und dann /group managed, oder /group disable zum Herausnehmen.</i>`;
+
+    await ctx.reply(msg.substring(0, 4000), { parse_mode: 'HTML' });
   });
 });
 
@@ -2381,6 +2428,11 @@ registerCron('eigene-links', '30 3 * * *', async () => {
   try {
     const { syncOwnGroupLinks } = await import('./ownLinks');
     await syncOwnGroupLinks(bot.telegram, false);
+    // Adminrechte prüfen: eine verwaltete Gruppe ohne Adminrechte sieht
+    // geschützt aus, ist es aber nicht.
+    const { pruefeAdminRechte } = await import('./adminRights');
+    await pruefeAdminRechte(bot.telegram, true);
+
     const { pruneLinkSightings } = await import('./db');
     // Aufbewahrung immer länger als das Auswertungsfenster, sonst lieferte
     // getLinkCampaignStats stillschweigend zu niedrige Werte.
@@ -2535,6 +2587,17 @@ async function main() {
         }
       }, 20000);
     }
+
+    // Adminrechte einmal beim Start prüfen (ohne Meldung — die kommt beim
+    // täglichen Lauf, sonst gäbe es bei jedem Neustart eine Nachricht).
+    setTimeout(async () => {
+      try {
+        const { pruefeAdminRechte } = await import('./adminRights');
+        await pruefeAdminRechte(bot.telegram, false);
+      } catch (error: any) {
+        console.error('[Startup][AdminRechte] Fehler:', error.message);
+      }
+    }, 60000);
 
     // ------------------------------------------------------------------
     // ALLES, WAS BEIM START LAUFEN MUSS, GEHÖRT VOR bot.launch().

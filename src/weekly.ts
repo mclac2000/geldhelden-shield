@@ -161,6 +161,25 @@ export async function generateWeeklyReport(ctx?: Context): Promise<string> {
     report += `Baseline-Scan: nicht prüfbar\n`;
   }
 
+  // Verwaltete Gruppen ohne Adminrechte — die gefährlichste Kategorie:
+  // Sie zählen überall als geschützt, obwohl dort weder gesperrt noch gelöscht
+  // werden kann.
+  try {
+    const { getGroupsWithoutAdminRights } = await import('./db');
+    const ohneRechte = getGroupsWithoutAdminRights();
+    if (ohneRechte.length === 0) {
+      report += `Adminrechte: in allen ${managedGroups.length} verwalteten Gruppen vorhanden\n`;
+    } else {
+      report += `Adminrechte FEHLEN in ${ohneRechte.length} verwalteten Gruppen — dort greift der Schutz nicht:\n`;
+      for (const g of ohneRechte.slice(0, 8)) {
+        report += `  - ${g.title || g.chat_id} (${g.mitglieder} Mitglieder)\n`;
+      }
+      befunde.push(`${ohneRechte.length} Gruppe(n) ohne Adminrechte`);
+    }
+  } catch {
+    report += `Adminrechte: nicht prüfbar\n`;
+  }
+
   // Gruppen, in denen der Bot laut Datenbank sein sollte, aber deaktiviert ist
   const deaktiviert = allGroups.filter(g => g.status === 2).length; // 2 = disabled
   if (deaktiviert > 0) {
