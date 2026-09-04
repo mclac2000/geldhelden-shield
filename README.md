@@ -2,6 +2,54 @@
 
 Ein professioneller Telegram Bot zur automatischen Erkennung und Bekämpfung von Scammern über mehrere Gruppen hinweg.
 
+---
+
+## ⚠️ VOR JEDER ÄNDERUNG AN `index.ts` LESEN
+
+### Alles, was hinter `await bot.launch()` steht, läuft nicht.
+
+`bot.launch()` löst im Long-Polling-Betrieb **nie** auf. Der Code dahinter ist
+im selben Block unerreichbar — ohne Fehlermeldung, ohne Absturz. Der Bot startet
+normal, und niemand merkt, dass die Hälfte des Startvorgangs fehlt.
+
+**Das ist hier acht Monate lang passiert.** Hinter dem Aufruf standen:
+
+| Was | Folge |
+|---|---|
+| Wochenbericht-Cron (sonntags 20:00) | war nie registriert — es gab nie einen automatischen Wochenbericht |
+| Baseline-Scan-Cron (monatlich) | war nie registriert. Die Mitgliederbasis wurde von **Januar bis September 2026** nicht ein einziges Mal aufgefrischt |
+| Bot-ID über `getMe` | nie ermittelt |
+| `sendStartupLog()` | nie gesendet |
+| einmaliger Wartungslauf beim Start | nie ausgeführt |
+
+Das System sah die ganze Zeit aus, als liefe es. Die 42 Baseline-Scans in der
+Datenbank stammten alle von manuellen Aufrufen.
+
+### Regel
+
+**Neuer Startup-Code gehört ausnahmslos VOR `await bot.launch()`.**
+Timer (`setTimeout`, `setInterval`) dürfen davor eingeplant werden — sie feuern
+später trotzdem, weil die Ereignisschleife weiterläuft.
+
+### Zwei Prüfungen halten das offen
+
+```bash
+npm test            # alle drei Testsätze
+npm run test:startup   # statisch: steht hinter bot.launch() noch etwas Ausführbares?
+```
+
+`scripts/test-startup-order.ts` liest `index.ts` als Text und schlägt fehl,
+sobald hinter `bot.launch()` ein `cron.schedule`, `setTimeout`, `setInterval`,
+Scheduler-Start oder `await` auftaucht. Braucht weder Datenbank noch Netz.
+
+Zusätzlich prüft `src/jobRegistry.ts` **zur Laufzeit** 40 Sekunden nach dem
+Start, ob alle erwarteten Hintergrundjobs registriert sind, und meldet Fehlendes
+in den Admin-Chat. Wer einen neuen Dauerjob anlegt, trägt ihn in
+`ERWARTETE_JOBS` ein und registriert ihn mit `registerCron(name, ...)` statt
+`cron.schedule(...)`.
+
+---
+
 ## Features
 
 - ✅ **Multi-Gruppen-Tracking**: Verfolgt User-Joins über 40+ Telegram-Gruppen

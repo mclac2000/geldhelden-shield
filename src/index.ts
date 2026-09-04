@@ -67,6 +67,7 @@ import {
   handleSetLocationCommand,
   isAdmin,
 } from './admin';
+import { registerCron, markJobRegistered, pruefeUndMelde } from './jobRegistry';
 import { logAdmin, setBotInstance, unrestrictUserInAllGroups, sendToAdminLogChat, sendJoinLogWithActions, banUserInAllGroups, isUserAdminOrCreatorInGroup, sendEscalationLog, checkImpersonation, sendImpersonationWarning, isBotAdminInGroup, isGroupManaged, isGroupManagedLive, deleteMessage } from './telegram';
 import { ShieldEvent, createJoinEvent, ShieldEventSource, ShieldEventType, logEvent } from './events';
 import { sendWelcomeIfEnabled } from './welcomeNew';
@@ -2275,6 +2276,7 @@ async function runMaintenanceJob(): Promise<void> {
 
 // Starte Wartungsjob alle 60 Minuten
 setInterval(runMaintenanceJob, MAINTENANCE_INTERVAL_MS);
+markJobRegistered('wartung', `alle ${MAINTENANCE_INTERVAL_MS / 60000} Minuten`);
 console.log(`[Startup] Wartungsjob gestartet (alle ${MAINTENANCE_INTERVAL_MS / 1000 / 60} Minuten)`);
 
 // Cluster-Erkennung alle 10 Minuten
@@ -2290,10 +2292,11 @@ setInterval(async () => {
     console.error('[Cluster] Fehler bei Batch-Analyse:', errorMessage);
   }
 }, CLUSTER_DETECTION_INTERVAL_MS);
+markJobRegistered('cluster-erkennung', `alle ${CLUSTER_DETECTION_INTERVAL_MS / 60000} Minuten`);
 console.log(`[Startup] Cluster-Erkennung gestartet (alle ${CLUSTER_DETECTION_INTERVAL_MS / 1000 / 60} Minuten)`);
 
 // DeletedAccount-AutoRemove: Täglich um 03:00 gelöschte Konten aus allen Gruppen bereinigen
-cron.schedule('0 3 * * *', async () => {
+registerCron('geloeschte-konten', '0 3 * * *', async () => {
   console.log('[CRON][DeletedAccounts] Starte Bereinigung gelöschter Konten...');
   try {
     const { banUserGlobally } = await import('./telegram');
@@ -2353,7 +2356,7 @@ console.log('[Startup] DeletedAccount-Bereinigung gestartet (täglich 03:00 Berl
 // Werbe-Wellen: eigene Gruppen-Links täglich freigeben + alte Sichtungen aufräumen.
 // Der Lauf muss regelmäßig erfolgen, damit neu angelegte Gruppen automatisch auf
 // die Freigabeliste kommen und nicht als fremder Link gezählt werden.
-cron.schedule('30 3 * * *', async () => {
+registerCron('eigene-links', '30 3 * * *', async () => {
   try {
     const { syncOwnGroupLinks } = await import('./ownLinks');
     await syncOwnGroupLinks(bot.telegram, false);
@@ -2549,7 +2552,7 @@ async function main() {
     });
 
     // Wochenreport: jeden Sonntag um 20:00 Uhr
-    cron.schedule('0 20 * * 0', async () => {
+    registerCron('wochenbericht', '0 20 * * 0', async () => {
       try {
         console.log('[Weekly] Starte automatischen Wochenreport...');
         const dummyCtx = { telegram: bot.telegram } as Context;
@@ -2563,7 +2566,7 @@ async function main() {
     console.log('[Startup] Wochenreport-Job gestartet (jeden Sonntag um 20:00 Uhr)');
 
     // Baseline-Scan: monatlich am 1. um 02:00 Uhr
-    cron.schedule('0 2 1 * *', async () => {
+    registerCron('baseline-scan', '0 2 1 * *', async () => {
       try {
         console.log('[Scan] Starte automatischen monatlichen Baseline-Scan...');
         const dummyCtx = { telegram: bot.telegram } as Context;
@@ -2575,6 +2578,17 @@ async function main() {
       }
     }, { timezone: config.timezone || 'Europe/Berlin' });
     console.log('[Startup] Baseline-Scan-Job gestartet (monatlich am 1. um 02:00 Uhr)');
+
+    // Nachweis, dass die erwarteten Hintergrundjobs tatsächlich registriert sind.
+    // Läuft verzögert im Timer — der greift auch dann, wenn bot.launch() nicht
+    // auflöst, also genau in dem Fall, der diese Prüfung nötig gemacht hat.
+    setTimeout(async () => {
+      try {
+        await pruefeUndMelde(bot.telegram, config.adminLogChat);
+      } catch (error: any) {
+        console.error('[JOBS] Prüfung fehlgeschlagen:', error.message);
+      }
+    }, 40000);
 
     console.log('[Startup] Starte Bot mit Long Polling...');
     await bot.launch({
