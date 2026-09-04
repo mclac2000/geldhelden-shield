@@ -1928,11 +1928,13 @@ export function getShieldStatistics(windowHours: number = 24): ShieldStatistics 
     lastEventTime = lastEscalationTime;
   }
   
-  // Top 3 auffälligste Gruppen (nach Event-Anzahl)
+  // Top 3 auffälligste Gruppen — gezählt werden BETROFFENE PERSONEN.
+  // COUNT(*) lieferte hier die Zeilen der actions-Tabelle: 39.596 statt 897
+  // in den letzten sieben Tagen. Siehe die Regel weiter unten in dieser Datei.
   const topGroupsStmt = db.prepare(`
-    SELECT 
+    SELECT
       a.chat_id,
-      COUNT(*) as event_count
+      COUNT(DISTINCT a.user_id) as event_count
     FROM actions a
     WHERE a.created_at >= ?
     GROUP BY a.chat_id
@@ -3720,14 +3722,36 @@ export function getJoinsCount(windowHours: number = 24): number {
   return result?.count || 0;
 }
 
+/*
+ * ============================================================================
+ * REGEL FÜR ALLE ZÄHLUNGEN AUF DER actions-TABELLE
+ * ============================================================================
+ * Die Tabelle enthält pro Sperre EINE ZEILE JE GRUPPE — und vor dem Stopp der
+ * Ban-Schleife (09/2026) zusätzlich je Wiederholung. Eine Person, die in 55
+ * Gruppen gesperrt und dabei mehrfach nachgefasst wurde, steht dort
+ * tausendfach.
+ *
+ * Gemessen am 04.09.2026:
+ *   Cluster-Banns gesamt:  30.136 Zeilen  ->      4 Personen  (Faktor 7.534)
+ *   Aktionen letzte 7 Tage: 39.596 Zeilen ->    897 User/Gruppe-Paare
+ *   Banns je Gruppe/Woche:     755 Zeilen ->     24 Personen  (Faktor 31)
+ *
+ * Wer Personen meint, schreibt COUNT(DISTINCT user_id).
+ * Wer Gruppen meint, schreibt COUNT(DISTINCT chat_id).
+ * COUNT(*) auf actions ergibt fast nie eine Zahl, die jemand lesen will.
+ * ============================================================================
+ */
+
 /**
- * Holt Anzahl Auto-Banns (Actions mit reason 'auto-rejoin block' oder 'auto-ban on join')
+ * Anzahl der PERSONEN, die per Auto-Ban gesperrt wurden.
+ * (Aktuell von keiner Stelle aufgerufen — die Zählung ist trotzdem korrigiert,
+ * damit sie beim nächsten Verwenden nicht dieselbe Falle stellt.)
  */
 export function getAutoBansCount(windowHours: number = 24): number {
   const db = getDatabase();
   const cutoffTime = Date.now() - (windowHours * 60 * 60 * 1000);
   const stmt = db.prepare(`
-    SELECT COUNT(*) as count
+    SELECT COUNT(DISTINCT user_id) as count
     FROM actions
     WHERE action = 'ban'
       AND created_at >= ?
@@ -3738,13 +3762,16 @@ export function getAutoBansCount(windowHours: number = 24): number {
 }
 
 /**
- * Holt Anzahl Cluster-Banns (Actions mit reason 'L3 cluster detection')
+ * Anzahl der PERSONEN, die über die Cluster-Erkennung gesperrt wurden.
+ *
+ * Hier war der Fehler am größten: über die gesamte Historie lieferte COUNT(*)
+ * 30.136 — tatsächlich waren es 4 Personen. Ebenfalls aktuell nicht aufgerufen.
  */
 export function getClusterBansCount(windowHours: number = 24): number {
   const db = getDatabase();
   const cutoffTime = Date.now() - (windowHours * 60 * 60 * 1000);
   const stmt = db.prepare(`
-    SELECT COUNT(*) as count
+    SELECT COUNT(DISTINCT user_id) as count
     FROM actions
     WHERE action = 'ban'
       AND created_at >= ?

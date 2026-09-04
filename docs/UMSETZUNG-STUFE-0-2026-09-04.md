@@ -301,6 +301,87 @@ sich mit `/group managed` zurückholen. Sicherung vor dem Eingriff liegt unter
 Damit meldet der Start jetzt `Managed: 55` statt `62` — die Zahl beschreibt
 tatsächlich erreichbare Gruppen.
 
+### Gruppen ohne Adminrechte — jetzt eine eigene Kategorie
+
+Eine Gruppe mit `status = 'managed'`, in der der Bot **kein Admin** ist, ist
+gefährlicher als eine, die gar nicht in der Liste steht: Sie erscheint in jeder
+Übersicht als geschützt, obwohl der Bot dort weder sperren noch löschen kann.
+Bis 09/2026 fiel so etwas nur als eine Zeile im Scan-Log auf, die niemand las.
+
+Eine Live-Prüfung aller 55 verwalteten Gruppen (`getChatMember` je Gruppe) ergab
+genau einen Fall:
+
+**`-1002244916653` — „Brückentage Butzbach"**
+
+| | |
+|---|---|
+| Typ | private Supergruppe |
+| Bot-Status | `member` (kein Admin) |
+| erfasste Mitglieder | **0** |
+| Beitritte | **nie** |
+| Aktivität | **nie** |
+| dem Bot bekannt seit | 25.06.2026 |
+| Beschreibung | WhatsApp-Link, „Standort der Brücke" |
+
+> **Das ist keine Geldhelden-Gruppe.** Der Bot wurde dort offenbar versehentlich
+> hinzugefügt und war nie Admin — deshalb hat er dort auch nie etwas
+> mitbekommen. Am 04.09.2026 auf `disabled` gesetzt.
+>
+> **Bei künftigen Abgleichen nicht als Verlust werten.** Es ging nichts
+> verloren; die Gruppe stand nur fälschlich in der Liste.
+
+Damit: **54 verwaltete Gruppen, alle mit Adminrechten**, Kategorie „ohne Rechte"
+leer.
+
+Dauerhaft sichtbar gemacht: `groups.bot_is_admin` wird 60 Sekunden nach jedem
+Start und täglich um 03:30 aktualisiert. Angezeigt in `/groups` (war ein
+Platzhalter, zeigt jetzt *geschützt* / *verwaltet aber ohne Rechte* /
+*deaktiviert*), in `/health` und im Wochenbericht. API-Fehler werden bewusst
+**nicht** als „kein Admin" gewertet — eine Störung darf keine Gruppe fälschlich
+als ungeschützt markieren.
+
+### Der Wochenbericht meldete Zahlen, die um Faktor 31 bis 7.534 danebenlagen
+
+Der Bericht wurde am 04.09.2026 mit echten Daten gefahren, statt auf den Sonntag
+zu warten. Drei Befunde:
+
+**1. „755 Banns" in einer Gruppe in einer Woche — es waren 24 Personen.**
+`getTopGroupsByBans` zählte `COUNT(*)` auf `actions`. Diese Tabelle enthält pro
+Sperre eine Zeile **je Gruppe**, vor dem Stopp der Ban-Schleife zusätzlich je
+Wiederholung.
+
+**2. „1107 Cluster identifiziert"** war der Gesamtbestand seit Systemstart,
+präsentiert als Wochenzahl — und wuchs jede Woche weiter.
+
+**3. Der Bericht endete unbedingt mit „Das System arbeitet stabil und überwacht
+das Netzwerk kontinuierlich."** Dieser Satz stand dort unabhängig vom Zustand.
+Er hätte auch am Morgen des 04.09.2026 dort gestanden, während der Bot mit
+`401 Unauthorized` in einer Neustartschleife lag.
+
+#### Dieselbe Zählung war an weiteren Stellen falsch
+
+Nach dem ersten Fund wurde jede Abfrage auf `actions` geprüft. Gemessen am
+04.09.2026:
+
+| Stelle | zählte | richtig wäre | Faktor |
+|---|---:|---:|---:|
+| `getClusterBansCount` (gesamte Historie) | 30.136 | **4** | **7.534** |
+| `getShieldStatistics` Top-Gruppen (7 Tage) | 39.596 | 897 | 44 |
+| `getTopGroupsByBans` (je Gruppe/Woche) | 755 | 24 | 31 |
+| `getAutoBansCount` (gesamt) | 7 | 6 | 1,2 |
+
+Der zuerst gefundene Fall war damit der **mildeste**. `getAutoBansCount` und
+`getClusterBansCount` werden derzeit von keiner Stelle aufgerufen — sie wurden
+trotzdem korrigiert, damit sie beim nächsten Verwenden nicht dieselbe Falle
+stellen.
+
+Korrekt waren: `getShieldStatistics.globalBans` (zählt die `blacklist`-Tabelle,
+dort ist `user_id` Primärschlüssel), `getBansInWindow` und `getBannedGroupCount`.
+
+**Regel, jetzt als Kommentarblock in `db.ts`:** Wer Personen meint, schreibt
+`COUNT(DISTINCT user_id)`. Wer Gruppen meint, `COUNT(DISTINCT chat_id)`.
+`COUNT(*)` auf `actions` ergibt fast nie eine Zahl, die jemand lesen will.
+
 ### `ADMIN_SYNC`-Dauerfehler beseitigt (8 → 0)
 
 `adminSync` nutzte `isGroupManaged()` aus `groupConfig.ts`. Das liest ein
