@@ -994,6 +994,57 @@ export function initDatabase(): any {
     }
   }
 
+  // Migration: Tabellen für die Erkennung von Werbe-Wellen (09/2026)
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS link_sightings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        link_key TEXT NOT NULL,
+        raw_url TEXT,
+        chat_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        message_id INTEGER,
+        forwarded INTEGER NOT NULL DEFAULT 0,
+        seen_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_link_sightings_key ON link_sightings(link_key, seen_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_link_sightings_seen ON link_sightings(seen_at);
+
+      CREATE TABLE IF NOT EXISTS link_verdicts (
+        link_key TEXT PRIMARY KEY,
+        first_seen INTEGER,
+        decided_at INTEGER NOT NULL,
+        distinct_users INTEGER NOT NULL,
+        distinct_chats INTEGER NOT NULL,
+        sightings INTEGER NOT NULL,
+        blocked INTEGER NOT NULL DEFAULT 0,
+        messages_removed INTEGER NOT NULL DEFAULT 0,
+        users_banned INTEGER NOT NULL DEFAULT 0,
+        reverted INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS link_allowlist (
+        link_key TEXT PRIMARY KEY,
+        reason TEXT,
+        added_at INTEGER NOT NULL,
+        added_by INTEGER
+      );
+    `);
+  } catch (error: any) {
+    if (!error.message.includes('duplicate column name') && !error.message.includes('already exists')) {
+      console.warn('[DB] Migration Warnung (campaign links):', error.message);
+    }
+  }
+
+  // Migration: username-Spalte für Gruppen (für die Freigabeliste eigener Links)
+  try {
+    db.exec(`ALTER TABLE groups ADD COLUMN username TEXT;`);
+  } catch (error: any) {
+    if (!error.message.includes('duplicate column name')) {
+      console.warn('[DB] Migration Warnung (groups.username):', error.message);
+    }
+  }
+
   // Migration: Erstelle identity_exempt Tabelle (Anti-Impersonation, 09/2026)
   // Wer einmal per /pardon entsperrt wurde, darf nicht beim nächsten Beitritt
   // erneut automatisch gesperrt werden — sonst wäre die Rücknahme wirkungslos.
@@ -2156,6 +2207,255 @@ export function getLastBanAttemptAt(userId: number): number | null {
   `);
   const row = stmt.get(userId) as { created_at: number } | undefined;
   return row ? row.created_at : null;
+}
+
+// --- Werbe-Wellen über den Ziel-Link (09/2026) ---
+
+/** Ist der Link freigegeben (eigene Gruppe oder manuell als harmlos markiert)? */
+export function isLinkAllowlisted(linkKey: string): boolean {
+  try {
+    const db = getDatabase();
+    return !!db.prepare('SELECT link_key FROM link_allowlist WHERE link_key = ?').get(linkKey);
+  } catch {
+    return false;
+  }
+}
+
+export function addLinkAllowlist(linkKey: string, reason: string, addedBy: number | null = null): void {
+  try {
+    const db = getDatabase();
+    db.prepare(`
+      INSERT INTO link_allowlist (link_key, reason, added_at, added_by) VALUES (?,?,?,?)
+      ON CONFLICT(link_key) DO UPDATE SET reason = excluded.reason, added_at = excluded.added_at
+    `).run(linkKey, reason, Date.now(), addedBy);
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in addLinkAllowlist:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Ist der Link als Welle gesperrt? */
+export function isLinkBlocked(linkKey: string): boolean {
+  try {
+    const db = getDatabase();
+    const row = db.prepare('SELECT blocked, reverted FROM link_verdicts WHERE link_key = ?').get(linkKey) as
+      { blocked: number; reverted: number } | undefined;
+    return !!row && row.blocked === 1 && row.reverted === 0;
+  } catch {
+    return false;
+  }
+}
+
+export function recordLinkSighting(
+  linkKey: string, rawUrl: string, chatId: string, userId: number,
+  messageId: number | null, forwarded: boolean
+): void {
+  try {
+    const db = getDatabase();
+    db.prepare(`
+      INSERT INTO link_sightings (link_key, raw_url, chat_id, user_id, message_id, forwarded, seen_at)
+      VALUES (?,?,?,?,?,?,?)
+    `).run(linkKey, rawUrl.substring(0, 300), chatId, userId, messageId, forwarded ? 1 : 0, Date.now());
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in recordLinkSighting:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Verbreitungs-Kennzahlen eines Links im Zeitfenster */
+export function getLinkCampaignStats(
+  linkKey: string, windowHours: number
+): { distinctUsers: number; distinctChats: number; sightings: number; firstSeen: number } {
+  try {
+    const db = getDatabase();
+    const cutoff = Date.now() - windowHours * 3600 * 1000;
+    const row = db.prepare(`
+      SELECT COUNT(DISTINCT user_id) du, COUNT(DISTINCT chat_id) dc,
+             COUNT(*) n, MIN(seen_at) fs
+      FROM link_sightings WHERE link_key = ? AND seen_at >= ?
+    `).get(linkKey, cutoff) as { du: number; dc: number; n: number; fs: number } | undefined;
+    return {
+      distinctUsers: row?.du ?? 0,
+      distinctChats: row?.dc ?? 0,
+      sightings: row?.n ?? 0,
+      firstSeen: row?.fs ?? Date.now(),
+    };
+  } catch {
+    return { distinctUsers: 0, distinctChats: 0, sightings: 0, firstSeen: Date.now() };
+  }
+}
+
+export function getLinkSightings(
+  linkKey: string, windowHours: number
+): Array<{ chat_id: string; user_id: number; message_id: number; forwarded: number }> {
+  try {
+    const db = getDatabase();
+    const cutoff = Date.now() - windowHours * 3600 * 1000;
+    return db.prepare(`
+      SELECT chat_id, user_id, message_id, forwarded FROM link_sightings
+      WHERE link_key = ? AND seen_at >= ? AND message_id IS NOT NULL
+      ORDER BY seen_at DESC LIMIT 1000
+    `).all(linkKey, cutoff) as Array<{ chat_id: string; user_id: number; message_id: number; forwarded: number }>;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Zeilen-ID des Urteils — wird als callback_data verwendet, weil Telegram dort
+ * nur 64 Byte erlaubt und ein Einladungs-Hash den Rahmen sprengen kann.
+ */
+export function getLinkVerdictId(linkKey: string): number | null {
+  try {
+    const row = getDatabase()
+      .prepare('SELECT rowid AS id FROM link_verdicts WHERE link_key = ?')
+      .get(linkKey) as { id: number } | undefined;
+    return row?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Schlüssel zu einer Urteil-Zeilen-ID */
+export function getLinkKeyById(id: number): string | null {
+  try {
+    const row = getDatabase()
+      .prepare('SELECT link_key FROM link_verdicts WHERE rowid = ?')
+      .get(id) as { link_key: string } | undefined;
+    return row?.link_key ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Legt das Urteil zu einem Link an bzw. aktualisiert es.
+ * @returns true, wenn zu diesem Link bereits ein Urteil bestand (also keine NEUE Welle)
+ */
+export function upsertLinkVerdict(
+  linkKey: string,
+  stats: { distinctUsers: number; distinctChats: number; sightings: number; firstSeen: number },
+  blocked: boolean
+): boolean {
+  try {
+    const db = getDatabase();
+    const existing = db.prepare('SELECT link_key FROM link_verdicts WHERE link_key = ?').get(linkKey);
+    if (existing) {
+      // blocked MUSS mitgeschrieben werden. Fehlte es, blieb ein im
+      // Beobachtungsmodus angelegtes Urteil für immer auf blocked=0 — und die
+      // Welle wurde bei JEDER weiteren Nachricht erneut vollständig behandelt
+      // (bis zu 500 Löschungen und erneute Bans, im Kreis).
+      // MAX(): eine bestehende Sperre wird nie versehentlich aufgehoben.
+      db.prepare(`
+        UPDATE link_verdicts
+        SET distinct_users = ?, distinct_chats = ?, sightings = ?,
+            blocked = MAX(blocked, ?)
+        WHERE link_key = ? AND reverted = 0
+      `).run(stats.distinctUsers, stats.distinctChats, stats.sightings, blocked ? 1 : 0, linkKey);
+      return true;
+    }
+    db.prepare(`
+      INSERT INTO link_verdicts (link_key, first_seen, decided_at, distinct_users, distinct_chats, sightings, blocked)
+      VALUES (?,?,?,?,?,?,?)
+    `).run(linkKey, stats.firstSeen, Date.now(), stats.distinctUsers, stats.distinctChats, stats.sightings, blocked ? 1 : 0);
+    return false;
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in upsertLinkVerdict:', error instanceof Error ? error.message : String(error));
+    return true; // im Zweifel nicht erneut melden
+  }
+}
+
+export function markLinkCampaignActioned(linkKey: string, removed: number, banned: number): void {
+  try {
+    const db = getDatabase();
+    db.prepare('UPDATE link_verdicts SET messages_removed = ?, users_banned = ? WHERE link_key = ?')
+      .run(removed, banned, linkKey);
+  } catch { /* nicht kritisch */ }
+}
+
+/** Hebt die Sperre eines Links auf und setzt ihn auf die Freigabeliste */
+export function revertLinkVerdict(linkKey: string, byAdmin: number): void {
+  try {
+    const db = getDatabase();
+    db.prepare('UPDATE link_verdicts SET reverted = 1, blocked = 0 WHERE link_key = ?').run(linkKey);
+    addLinkAllowlist(linkKey, `Als harmlos eingestuft durch Admin ${byAdmin}`, byAdmin);
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in revertLinkVerdict:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Setzt einen Link manuell auf gesperrt */
+export function blockLinkManually(linkKey: string, byAdmin: number): void {
+  try {
+    const db = getDatabase();
+    const stats = getLinkCampaignStats(linkKey, 24 * 365);
+    db.prepare(`
+      INSERT INTO link_verdicts (link_key, first_seen, decided_at, distinct_users, distinct_chats, sightings, blocked)
+      VALUES (?,?,?,?,?,?,1)
+      ON CONFLICT(link_key) DO UPDATE SET blocked = 1, reverted = 0, decided_at = excluded.decided_at
+    `).run(linkKey, stats.firstSeen, Date.now(), stats.distinctUsers, stats.distinctChats, stats.sightings);
+    db.prepare('DELETE FROM link_allowlist WHERE link_key = ?').run(linkKey);
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in blockLinkManually:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Bestehendes Urteil zu einem Link, oder null */
+export function getLinkVerdict(linkKey: string): { blocked: number; reverted: number } | null {
+  try {
+    const row = getDatabase()
+      .prepare('SELECT blocked, reverted FROM link_verdicts WHERE link_key = ?')
+      .get(linkKey) as { blocked: number; reverted: number } | undefined;
+    return row || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Übersicht für /links */
+export function getLinkVerdicts(limit: number = 25): any[] {
+  try {
+    return getDatabase().prepare(
+      'SELECT * FROM link_verdicts ORDER BY decided_at DESC LIMIT ?'
+    ).all(limit);
+  } catch {
+    return [];
+  }
+}
+
+/** Meistverbreitete, noch unbewertete Links im Zeitfenster (Beobachtungsmodus) */
+export function getTopLinks(windowHours: number, limit: number = 25): any[] {
+  try {
+    const cutoff = Date.now() - windowHours * 3600 * 1000;
+    return getDatabase().prepare(`
+      SELECT s.link_key, MAX(s.raw_url) raw_url,
+             COUNT(DISTINCT s.user_id) du, COUNT(DISTINCT s.chat_id) dc, COUNT(*) n
+      FROM link_sightings s
+      WHERE s.seen_at >= ?
+        AND s.link_key NOT IN (SELECT link_key FROM link_allowlist)
+      GROUP BY s.link_key
+      ORDER BY du DESC, dc DESC, n DESC
+      LIMIT ?
+    `).all(cutoff, limit);
+  } catch {
+    return [];
+  }
+}
+
+/** Gruppen-Benutzername speichern (für die Freigabeliste eigener Links) */
+export function setGroupUsername(chatId: string, username: string | null): void {
+  try {
+    getDatabase().prepare('UPDATE groups SET username = ? WHERE chat_id = ?').run(username, chatId);
+  } catch { /* nicht kritisch */ }
+}
+
+/** Entfernt Sichtungen, die älter als das Aufbewahrungsfenster sind */
+export function pruneLinkSightings(retentionDays: number = 30): number {
+  try {
+    const cutoff = Date.now() - retentionDays * 86400 * 1000;
+    const info = getDatabase().prepare('DELETE FROM link_sightings WHERE seen_at < ?').run(cutoff);
+    return info.changes;
+  } catch {
+    return 0;
+  }
 }
 
 // --- Namens-Historie (Anti-Impersonation, 09/2026) ---

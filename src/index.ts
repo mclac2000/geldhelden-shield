@@ -161,6 +161,11 @@ function logStartupInfo(): void {
   console.log(`   Geschützte Namen: ${config.protectedNames.join(', ')}`);
   console.log(`   Ähnlichkeitsschwelle: ${config.impersonationSimilarityThreshold} %`);
   console.log(`   Automatische Sperre: ${config.impersonationAutoBan ? '⚠️  AKTIV' : '✅ Aus (nur Alarm)'}`);
+  console.log(`🔗 Werbe-Wellen (Ziel-Link):`);
+  console.log(`   Erfassung: ${config.campaignLinksEnabled ? '✅' : '❌'}`);
+  console.log(`   Schwelle: ≥${config.campaignMinUsers} Konten, ≥${config.campaignMinChats} Gruppen, ≥${config.campaignMinSightings} Nachrichten in ${config.campaignWindowHours} h`);
+  console.log(`   Automatische Sperre: ${config.campaignAutoBlock ? '⚠️  AKTIV' : '✅ Aus (nur Beobachtung)'}`);
+  console.log(`   Verteiler automatisch sperren: ${config.campaignAutoBanSpreaders ? '⚠️  AKTIV' : '✅ Aus'}`);
   console.log('═══════════════════════════════════════════════════════════');
 }
 
@@ -1300,6 +1305,74 @@ bot.command('identity', async (ctx: Context) => {
   });
 });
 
+// Command: /links [top|blocked|allow <key>|block <key>|sync]
+// Werbe-Wellen über den Ziel-Link: Übersicht, manuelle Freigabe/Sperre.
+bot.command('links', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'links', async (ctx) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').slice(1);
+    const sub = (parts[0] || 'top').toLowerCase();
+    const arg = parts[1];
+    const {
+      getTopLinks, getLinkVerdicts, addLinkAllowlist,
+      blockLinkManually, revertLinkVerdict,
+    } = await import('./db');
+
+    if (sub === 'sync') {
+      await ctx.reply('⏳ Ermittle die Benutzernamen aller verwalteten Gruppen…');
+      const { syncOwnGroupLinks } = await import('./ownLinks');
+      const r = await syncOwnGroupLinks(ctx.telegram, false);
+      await ctx.reply(
+        `✅ <b>Eigene Gruppen-Links erfasst</b>\n\n` +
+          `📍 Gruppen geprüft: ${r.checked}\n` +
+          `🔗 mit öffentlichem Namen: ${r.withUsername}\n` +
+          `✅ neu freigegeben: ${r.allowlisted}\n` +
+          `⚠️ Fehler: ${r.errors}`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+
+    if (sub === 'allow' && arg) {
+      addLinkAllowlist(arg, `Manuell durch Admin ${ctx.from!.id}`, ctx.from!.id);
+      revertLinkVerdict(arg, ctx.from!.id);
+      await ctx.reply(`✅ <code>${arg}</code> freigegeben.`, { parse_mode: 'HTML' });
+      return;
+    }
+
+    if (sub === 'block' && arg) {
+      blockLinkManually(arg, ctx.from!.id);
+      await ctx.reply(`🚫 <code>${arg}</code> gesperrt. Neue Nachrichten damit werden gelöscht.`, { parse_mode: 'HTML' });
+      return;
+    }
+
+    if (sub === 'blocked') {
+      const rows = getLinkVerdicts(25);
+      let msg = `🚫 <b>Bewertete Links</b> (${rows.length})\n\n`;
+      if (rows.length === 0) msg += 'Noch keine.';
+      for (const r of rows) {
+        const st = r.reverted ? '✅ frei' : r.blocked ? '🚫 gesperrt' : '👁 beobachtet';
+        msg += `${st} <code>${r.link_key}</code> — ${r.distinct_users} Konten / ${r.distinct_chats} Gruppen\n`;
+      }
+      await ctx.reply(msg.substring(0, 4000), { parse_mode: 'HTML' });
+      return;
+    }
+
+    // Standard: die auffälligsten Links im Beobachtungsfenster
+    const rows = getTopLinks(config.campaignWindowHours, 25);
+    let msg = `🔗 <b>Fremde Telegram-Links</b> (letzte ${config.campaignWindowHours} h)\n`;
+    msg += `<i>Wellen-Schwelle: ≥${config.campaignMinUsers} Konten und ≥${config.campaignMinChats} Gruppen</i>\n`;
+    msg += `<i>Automatische Sperre: ${config.campaignAutoBlock ? 'AKTIV' : 'aus (nur Beobachtung)'}</i>\n\n`;
+    if (rows.length === 0) msg += 'Keine fremden Links erfasst.';
+    for (const r of rows) {
+      const flag = r.du >= config.campaignMinUsers && r.dc >= config.campaignMinChats ? '⚠️' : '  ';
+      msg += `${flag} <code>${r.link_key}</code> — ${r.du} Konten / ${r.dc} Gruppen / ${r.n} Nachrichten\n`;
+    }
+    msg += `\n<i>/links allow &lt;key&gt; · /links block &lt;key&gt; · /links blocked · /links sync</i>`;
+    await ctx.reply(msg.substring(0, 4000), { parse_mode: 'HTML' });
+  });
+});
+
 // Command: /unban <user_id|@username>
 bot.command('unban', async (ctx: Context) => {
   await handleAdminCommand(ctx, 'unban', async (ctx, ...args) => {
@@ -1618,6 +1691,27 @@ bot.on('message', async (ctx: Context, next) => {
       return; // Early return - Scam wurde bereits behandelt
     }
     
+    // 1b. Werbe-Wellen: Ziel-Links erfassen und gesperrte Links entfernen.
+    // Läuft NACH der Scam-Prüfung (deren Löschung hat Vorrang) und unabhängig
+    // von der Link-Policy, die nur die ersten 30 Minuten nach Beitritt greift.
+    try {
+      const { processCampaignLinks } = await import('./campaignLinks');
+      const campaign = await processCampaignLinks(ctx);
+      if (campaign.deleted) {
+        // Cluster-Erkennung trotzdem füttern: gerade die Konten, die einen
+        // gesperrten Kampagnen-Link posten, gehören dort hinein.
+        try {
+          if (ctx.from && ctx.chat) {
+            const { checkClusterLevel } = await import('./cluster2');
+            await checkClusterLevel(ctx.from.id, String(ctx.chat.id), ctx);
+          }
+        } catch { /* darf den Bot nicht stoppen */ }
+        return; // Nachricht mit gesperrtem Kampagnen-Link wurde entfernt
+      }
+    } catch (campaignError: unknown) {
+      console.error('[CampaignLink] Fehler im Handler:', campaignError instanceof Error ? campaignError.message : String(campaignError));
+    }
+
     // 2. Link-Policy (Prompt F) - Für neue User
     const { moderateLinkPolicy } = await import('./linkPolicy');
     const linkHandled = await moderateLinkPolicy(ctx);
@@ -1703,10 +1797,19 @@ bot.on('edited_message', async (ctx: Context) => {
     // Scam-Erkennung auch bei bearbeiteten Nachrichten
     const { moderateScamMessage } = await import('./scamModeration');
     const scamHandled = await moderateScamMessage(ctx);
-    
+
     // Wenn Scam erkannt und gelöscht, überspringe weitere Moderation
     if (scamHandled) {
       return; // Early return - Scam wurde bereits behandelt
+    }
+
+    // Werbe-Wellen auch hier prüfen. Sonst genügte es, eine harmlose Nachricht
+    // zu posten und den Link erst danach hineinzueditieren.
+    try {
+      const { processCampaignLinks } = await import('./campaignLinks');
+      await processCampaignLinks(ctx);
+    } catch (e: unknown) {
+      console.error('[CampaignLink][EDIT] Fehler:', e instanceof Error ? e.message : String(e));
     }
   } catch (error: unknown) {
     // Fehler beim Scam-Check ignorieren (nicht kritisch)
@@ -1826,6 +1929,47 @@ bot.on('callback_query', async (ctx: Context) => {
     // Video-Callbacks werden von handleVideoCallback verarbeitet
     if (data.startsWith('video_')) {
       await handleVideoCallback(ctx);
+      return;
+    }
+
+    // Werbe-Wellen: Link sperren bzw. als harmlos freigeben
+    if (data.startsWith('link_block:') || data.startsWith('link_allow:')) {
+      if (!ctx.from || !isAdmin(ctx.from.id)) {
+        await ctx.answerCbQuery('❌ Du bist kein Administrator');
+        return;
+      }
+      const isBlock = data.startsWith('link_block:');
+      // Nutzlast ist die Zeilen-ID des Urteils, nicht der Schlüssel selbst —
+      // der enthält seinerseits einen Doppelpunkt und kann zu lang für
+      // callback_data (64 Byte) sein.
+      const vid = parseInt(data.substring(data.indexOf(':') + 1), 10);
+      const { getLinkKeyById } = await import('./db');
+      const linkKey = isNaN(vid) ? null : getLinkKeyById(vid);
+      if (!linkKey) {
+        await ctx.answerCbQuery('❌ Link nicht mehr auffindbar');
+        return;
+      }
+      try {
+        const { blockLinkManually, revertLinkVerdict } = await import('./db');
+        if (isBlock) {
+          blockLinkManually(linkKey, ctx.from.id);
+        } else {
+          revertLinkVerdict(linkKey, ctx.from.id);
+        }
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+        await ctx.answerCbQuery(isBlock ? '🚫 Link gesperrt' : '✅ Link freigegeben');
+        await sendToAdminLogChat(
+          `${isBlock ? '🚫' : '✅'} Link <code>${linkKey}</code> ` +
+            `${isBlock ? 'gesperrt' : 'als harmlos freigegeben'} durch ` +
+            `${ctx.from.username || ctx.from.first_name || 'Admin'} (<code>${ctx.from.id}</code>)`,
+          ctx,
+          true
+        );
+        console.log(`[CampaignLink][MANUELL] ${linkKey} ${isBlock ? 'gesperrt' : 'freigegeben'} durch admin=${ctx.from.id}`);
+      } catch (error: unknown) {
+        console.error('[CampaignLink] Callback-Fehler:', error instanceof Error ? error.message : String(error));
+        await ctx.answerCbQuery('❌ Fehler');
+      }
       return;
     }
 
@@ -2206,6 +2350,25 @@ cron.schedule('0 3 * * *', async () => {
 }, { timezone: 'Europe/Berlin' });
 console.log('[Startup] DeletedAccount-Bereinigung gestartet (täglich 03:00 Berlin)');
 
+// Werbe-Wellen: eigene Gruppen-Links täglich freigeben + alte Sichtungen aufräumen.
+// Der Lauf muss regelmäßig erfolgen, damit neu angelegte Gruppen automatisch auf
+// die Freigabeliste kommen und nicht als fremder Link gezählt werden.
+cron.schedule('30 3 * * *', async () => {
+  try {
+    const { syncOwnGroupLinks } = await import('./ownLinks');
+    await syncOwnGroupLinks(bot.telegram, false);
+    const { pruneLinkSightings } = await import('./db');
+    // Aufbewahrung immer länger als das Auswertungsfenster, sonst lieferte
+    // getLinkCampaignStats stillschweigend zu niedrige Werte.
+    const retentionDays = Math.max(30, Math.ceil(config.campaignWindowHours / 24) + 7);
+    const removed = pruneLinkSightings(retentionDays);
+    if (removed > 0) console.log(`[CRON][CampaignLinks] ${removed} alte Link-Sichtungen entfernt`);
+  } catch (error: any) {
+    console.error('[CRON][CampaignLinks] Fehler:', error.message);
+  }
+}, { timezone: 'Europe/Berlin' });
+console.log('[Startup] Eigene-Links-Sync gestartet (täglich 03:30 Berlin)');
+
 // Manueller Befehl /cleandeleted für sofortige Bereinigung (bereits in admin.ts registriert falls vorhanden)
 
 // Startup Self-Check Log (PFLICHT - muss IMMER erscheinen)
@@ -2332,6 +2495,20 @@ async function main() {
     
     console.log('[Startup] ✅ Bot erfolgreich gestartet!');
     console.log('[Startup] Bot läuft im Long Polling Modus');
+
+    // Eigene Gruppen-Links freigeben — verzögert, damit der Start nicht blockiert.
+    // Ohne diese Liste würden legitime Verlinkungen unserer eigenen Gruppen als
+    // fremde Links gezählt und könnten die Wellen-Schwelle auslösen.
+    if (config.campaignLinksEnabled) {
+      setTimeout(async () => {
+        try {
+          const { syncOwnGroupLinks } = await import('./ownLinks');
+          await syncOwnGroupLinks(bot.telegram, false);
+        } catch (error: any) {
+          console.error('[Startup][OwnLinks] Fehler:', error.message);
+        }
+      }, 20000);
+    }
     
     // KRITISCH: ERST NACH bot.launch() - Hole Bot-ID mit getMe()
     let BOT_ID: number;

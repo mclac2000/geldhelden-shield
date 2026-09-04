@@ -10,7 +10,8 @@
     "db:migrate": "ts-node src/db.ts --migrate",
     "get-ids": "ts-node scripts/get-telegram-ids.ts",
     "identity:reference": "ts-node scripts/capture-identity-reference.ts",
-    "test:identity": "ts-node scripts/test-identity.ts"
+    "test:identity": "ts-node scripts/test-identity.ts",
+    "test:links": "ts-node scripts/test-campaign-links.ts"
   },
   "keywords": [
     "telegram",

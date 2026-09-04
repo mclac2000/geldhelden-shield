@@ -31,6 +31,16 @@ export interface Config {
   protectedUserIds: number[];
   /** Automatischer Global-Ban bei zweifelsfreier Identitäts-Täuschung */
   impersonationAutoBan: boolean;
+  // Werbe-Wellen über den Ziel-Link
+  campaignLinksEnabled: boolean;
+  campaignWindowHours: number;
+  campaignMinUsers: number;
+  campaignMinChats: number;
+  campaignMinSightings: number;
+  campaignAutoBlock: boolean;
+  campaignAutoBanSpreaders: boolean;
+  /** Zusätzliche eigene/partnerschaftliche Telegram-Namen, die nie als Welle gelten */
+  ownLinkExtras: string[];
   // Debug
   debugJoins: boolean;
   // Moderation Defaults
@@ -270,6 +280,26 @@ export function loadConfig(): Config {
 
   const impersonationAutoBan = parseBoolean(process.env.IMPERSONATION_AUTO_BAN, false);
 
+  // Werbe-Wellen: ein fremder t.me-Link, den mehrere Konten in mehreren Gruppen
+  // posten. Erfassung ist standardmäßig an (sie ist harmlos), die Durchsetzung
+  // standardmäßig aus — erst messen, dann scharf schalten.
+  const campaignLinksEnabled = parseBoolean(process.env.CAMPAIGN_LINKS_ENABLED, true);
+  const campaignWindowHours = parseBoundedInt(process.env.CAMPAIGN_WINDOW_HOURS, 72, 1, 8760, 'CAMPAIGN_WINDOW_HOURS');
+  const campaignMinUsers = parseBoundedInt(process.env.CAMPAIGN_MIN_USERS, 3, 2, 100, 'CAMPAIGN_MIN_USERS');
+  const campaignMinChats = parseBoundedInt(process.env.CAMPAIGN_MIN_CHATS, 2, 2, 100, 'CAMPAIGN_MIN_CHATS');
+  // Mindestzahl an Nachrichten insgesamt. Ohne diese Bedingung genügten drei
+  // einzelne Erwähnungen eines beliebten fremden Links über drei Tage.
+  const campaignMinSightings = parseBoundedInt(process.env.CAMPAIGN_MIN_SIGHTINGS, 5, 2, 1000, 'CAMPAIGN_MIN_SIGHTINGS');
+  const campaignAutoBlock = parseBoolean(process.env.CAMPAIGN_LINKS_AUTO_BLOCK, false);
+  const campaignAutoBanSpreaders = parseBoolean(process.env.CAMPAIGN_AUTO_BAN_SPREADERS, false);
+
+  // Eigene Kanäle und Partner, die Mitglieder legitim in vielen Gruppen teilen.
+  // Die verwalteten Gruppen selbst werden automatisch erfasst (ownLinks.ts).
+  const ownLinkExtras = (process.env.OWN_LINK_EXTRAS || 'geldhelden,mclac2000,staatenlos')
+    .split(',')
+    .map(v => v.trim().toLowerCase())
+    .filter(v => v.length > 0);
+
   if (protectedPhotoIds.length > 0 && protectedUserIds.length === 0) {
     console.warn('⚠️  [Config] PROTECTED_PHOTO_IDS gesetzt, aber PROTECTED_USER_IDS leer — der echte Account würde sich selbst als Fälschung erkennen. Foto-Prüfung wird deaktiviert.');
   }
@@ -338,6 +368,14 @@ Mehr Infos: {bio_link}`;
     protectedPhotoIds,
     protectedUserIds,
     impersonationAutoBan,
+    campaignLinksEnabled,
+    campaignWindowHours,
+    campaignMinUsers,
+    campaignMinChats,
+    campaignMinSightings,
+    campaignAutoBlock,
+    campaignAutoBanSpreaders,
+    ownLinkExtras,
     debugJoins,
     linksLockedDefault,
     forwardLockedDefault,
