@@ -146,7 +146,26 @@ Alle vier neuen Tabellen sind angelegt. Der Bot verarbeitet Nachrichten (im Log:
 
 ## 4. Was Marco noch selbst tun muss
 
-### Bot-Token widerrufen — das kann ich nicht
+### Bot-Token — widerrufen ✅, neuer Token fehlt noch ❗
+
+**Stand 04.09.2026, 05:00 Uhr:** Der alte Token wurde widerrufen (Telegram
+antwortet auf `getMe` mit `401: Unauthorized`). Das ist richtig so — aber der
+**neue Token steht noch nicht in der `.env`**, deshalb ist der Bot aktuell offline
+und der Container startet in einer Schleife neu.
+
+**Behebung — ein Befehl:**
+
+```bash
+ssh root@77.42.42.65
+cd "/root/Geldhelden Shield"
+./set-token.sh <neuer_token_von_botfather>
+```
+
+Das Skript prüft den Token erst gegen Telegram, legt eine Sicherung der `.env` an,
+trägt ihn ein, startet den Bot neu und zeigt zur Kontrolle `Managed: 62`.
+Bei einem ungültigen Token wird nichts geändert.
+
+### Hintergrund zum Widerruf
 
 Der Token steht **in der Git-Historie** des öffentlichen Repos (seit dem ersten Commit) und war bis heute in der `README.md`. Ich habe ihn aus der README entfernt, **aber die Historie lässt sich nicht bereinigen** — der Token ist dauerhaft verbrannt.
 
