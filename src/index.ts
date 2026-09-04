@@ -2485,20 +2485,11 @@ async function main() {
     console.log('[Startup] Video-Task-Scheduler gestartet');
 
     // Starte Bot NACH erfolgreichen Checks
-    console.log('[Startup] Starte Bot mit Long Polling...');
-    await bot.launch({
-      // 'edited_message' ergänzt (09/2026): der edited_message-Handler war registriert,
-      // bekam aber nie Updates — Scam-Check auf nachträglich bearbeitete Nachrichten
-      // griff dadurch nicht.
-      allowedUpdates: ['message', 'edited_message', 'my_chat_member', 'chat_member', 'callback_query', 'channel_post'],
-    });
-    
-    console.log('[Startup] ✅ Bot erfolgreich gestartet!');
-    console.log('[Startup] Bot läuft im Long Polling Modus');
-
-    // Eigene Gruppen-Links freigeben — verzögert, damit der Start nicht blockiert.
-    // Ohne diese Liste würden legitime Verlinkungen unserer eigenen Gruppen als
-    // fremde Links gezählt und könnten die Wellen-Schwelle auslösen.
+    // Eigene Gruppen-Links freigeben — VOR bot.launch() einplanen.
+    // bot.launch() löst im Long-Polling-Betrieb nie auf; alles danach im
+    // selben Block wird nie ausgeführt (betrifft auch den vorhandenen
+    // getMe/sendStartupLog-Abschnitt weiter unten, siehe Notiz im Bericht).
+    // Der Timer läuft trotzdem, weil die Ereignisschleife weiterläuft.
     if (config.campaignLinksEnabled) {
       setTimeout(async () => {
         try {
@@ -2509,6 +2500,21 @@ async function main() {
         }
       }, 20000);
     }
+
+    console.log('[Startup] Starte Bot mit Long Polling...');
+    await bot.launch({
+      // 'edited_message' ergänzt (09/2026): der edited_message-Handler war registriert,
+      // bekam aber nie Updates — Scam-Check auf nachträglich bearbeitete Nachrichten
+      // griff dadurch nicht.
+      allowedUpdates: ['message', 'edited_message', 'my_chat_member', 'chat_member', 'callback_query', 'channel_post'],
+    });
+    
+    // ACHTUNG: Ab hier wird im Long-Polling-Betrieb NICHTS mehr ausgeführt —
+    // bot.launch() löst nicht auf. Das betrifft den gesamten folgenden Block
+    // (Bot-ID über getMe, sendStartupLog, checkAllGroupsOnStartup) und war
+    // bereits vor 09/2026 so. Neuer Code gehört VOR bot.launch().
+    console.log('[Startup] ✅ Bot erfolgreich gestartet!');
+    console.log('[Startup] Bot läuft im Long Polling Modus');
     
     // KRITISCH: ERST NACH bot.launch() - Hole Bot-ID mit getMe()
     let BOT_ID: number;
