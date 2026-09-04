@@ -222,7 +222,11 @@ export function loadConfig(): Config {
   const riskJoinEvent = parsePositiveInt(process.env.RISK_JOIN_EVENT, 10, 'RISK_JOIN_EVENT');
   const riskMultiJoinBonus = parsePositiveInt(process.env.RISK_MULTI_JOIN_BONUS, 20, 'RISK_MULTI_JOIN_BONUS');
   const riskAccountAgeThreshold = parsePositiveInt(process.env.RISK_ACCOUNT_AGE_THRESHOLD, 7, 'RISK_ACCOUNT_AGE_THRESHOLD');
-  const riskAccountAgeBonus = parsePositiveInt(process.env.RISK_ACCOUNT_AGE_BONUS, 30, 'RISK_ACCOUNT_AGE_BONUS');
+  // parseBoundedInt statt parsePositiveInt: 0 muss zulässig sein, um den Bonus
+  // abschalten zu können. Die Account-Alter-Heuristik in risk.ts rechnet mit der
+  // User-ID und stuft praktisch jeden heutigen Account als "0 Tage alt" ein —
+  // solange sie nicht kalibriert ist, wäre ein Bonus von 30 ein Massen-Fehlalarm.
+  const riskAccountAgeBonus = parseBoundedInt(process.env.RISK_ACCOUNT_AGE_BONUS, 30, 0, 1000, 'RISK_ACCOUNT_AGE_BONUS');
   const riskNoUsername = parsePositiveInt(process.env.RISK_NO_USERNAME, 15, 'RISK_NO_USERNAME');
   const riskNoProfilePhoto = parsePositiveInt(process.env.RISK_NO_PROFILE_PHOTO, 10, 'RISK_NO_PROFILE_PHOTO');
   const riskRestrictThreshold = parsePositiveInt(process.env.RISK_RESTRICT_THRESHOLD, 60, 'RISK_RESTRICT_THRESHOLD');

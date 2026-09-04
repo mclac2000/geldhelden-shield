@@ -155,6 +155,12 @@ function logStartupInfo(): void {
   console.log(`   Panic Mode: ${config.panicMode ? '⚠️  AKTIV' : '✅ Inaktiv'}`);
   console.log(`   Dry-Run Mode: ${config.dryRunMode ? '⚠️  AKTIV' : '✅ Inaktiv'}`);
   console.log(`   Debug Joins: ${config.debugJoins ? '✅' : '❌'}`);
+  console.log(`🛡  Anti-Impersonation:`);
+  console.log(`   Geschützte Accounts: ${config.protectedUserIds.length > 0 ? config.protectedUserIds.join(', ') : '❌ KEINE (Fotoabgleich inaktiv)'}`);
+  console.log(`   Referenz-Profilfotos: ${config.protectedPhotoIds.length > 0 ? config.protectedPhotoIds.length : '❌ KEINE (Fotoabgleich inaktiv)'}`);
+  console.log(`   Geschützte Namen: ${config.protectedNames.join(', ')}`);
+  console.log(`   Ähnlichkeitsschwelle: ${config.impersonationSimilarityThreshold} %`);
+  console.log(`   Automatische Sperre: ${config.impersonationAutoBan ? '⚠️  AKTIV' : '✅ Aus (nur Alarm)'}`);
   console.log('═══════════════════════════════════════════════════════════');
 }
 
