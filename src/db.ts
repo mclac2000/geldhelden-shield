@@ -994,6 +994,54 @@ export function initDatabase(): any {
     }
   }
 
+  // Migration: user_profiles — Bio und Profilbild je Konto (09/2026)
+  //
+  // Grundlage für die Profilprüfung beim Beitritt: Ein Konto, das in seiner Bio
+  // auf eine fremde Telegram-Gruppe verweist, wirbt ab. Und ein Profilbild, das
+  // bereits unter einem anderen Konto gesehen wurde, ist gestohlen.
+  // Beides ist ohne gespeicherte Profile nicht feststellbar.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS user_profiles (
+        user_id INTEGER PRIMARY KEY,
+        bio TEXT,
+        photo_unique_id TEXT,
+        has_private_forwards INTEGER,
+        checked_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_profiles_photo ON user_profiles(photo_unique_id);
+      CREATE INDEX IF NOT EXISTS idx_user_profiles_checked ON user_profiles(checked_at);
+    `);
+  } catch (error: any) {
+    if (!error.message.includes('duplicate column name') && !error.message.includes('already exists')) {
+      console.warn('[DB] Migration Warnung (user_profiles):', error.message);
+    }
+  }
+
+  // Migration: profile_events — Protokoll der Profilprüfung (09/2026)
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS profile_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        chat_id TEXT,
+        massnahme TEXT NOT NULL,
+        grund TEXT,
+        belege TEXT,
+        bio TEXT,
+        username TEXT,
+        reverted INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_profile_events_user ON profile_events(user_id);
+      CREATE INDEX IF NOT EXISTS idx_profile_events_created ON profile_events(created_at DESC);
+    `);
+  } catch (error: any) {
+    if (!error.message.includes('duplicate column name') && !error.message.includes('already exists')) {
+      console.warn('[DB] Migration Warnung (profile_events):', error.message);
+    }
+  }
+
   // Migration: scan_runs — Lauf-Protokoll des Baseline-Scans (09/2026)
   //
   // Bis dahin wurde NICHTS über Scan-Läufe festgehalten: scan.ts rief
@@ -3959,6 +4007,84 @@ export function saveBaselineScan(
   `);
   const result = stmt.run(chatId, scanType, Date.now(), membersCount, membersScanned, scanLimited ? 1 : 0);
   return result.lastInsertRowid as number;
+}
+
+// --- Profile: Bio und Profilbild je Konto (09/2026) ---
+
+export function saveUserProfile(
+  userId: number, bio: string | null, photoUniqueId: string | null,
+  hasPrivateForwards: boolean | null
+): void {
+  try {
+    getDatabase().prepare(`
+      INSERT INTO user_profiles (user_id, bio, photo_unique_id, has_private_forwards, checked_at)
+      VALUES (?,?,?,?,?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        bio = excluded.bio, photo_unique_id = excluded.photo_unique_id,
+        has_private_forwards = excluded.has_private_forwards, checked_at = excluded.checked_at
+    `).run(userId, bio, photoUniqueId, hasPrivateForwards === null ? null : (hasPrivateForwards ? 1 : 0), Date.now());
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in saveUserProfile:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+export function getUserProfile(userId: number): { bio: string | null; photo_unique_id: string | null; checked_at: number } | null {
+  try {
+    const r = getDatabase()
+      .prepare('SELECT bio, photo_unique_id, checked_at FROM user_profiles WHERE user_id = ?')
+      .get(userId) as any;
+    return r || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Andere Konten mit demselben Profilbild.
+ * Ein Bild, das unter mehreren Konten auftaucht, ist mit hoher Wahrscheinlichkeit
+ * gestohlen — echte Menschen teilen ihr Profilbild nicht mit Fremden.
+ */
+export function getUsersWithSamePhoto(photoUniqueId: string, exceptUserId: number): number[] {
+  if (!photoUniqueId) return [];
+  try {
+    return (getDatabase().prepare(`
+      SELECT user_id FROM user_profiles WHERE photo_unique_id = ? AND user_id != ? LIMIT 20
+    `).all(photoUniqueId, exceptUserId) as Array<{ user_id: number }>).map(r => r.user_id);
+  } catch {
+    return [];
+  }
+}
+
+/** Protokolliert eine Entscheidung der Profilprüfung */
+export function logProfileEvent(
+  userId: number, chatId: string | null, massnahme: string, grund: string,
+  belege: string[], bio: string | null, username: string | null
+): void {
+  try {
+    getDatabase().prepare(`
+      INSERT INTO profile_events (created_at, user_id, chat_id, massnahme, grund, belege, bio, username)
+      VALUES (?,?,?,?,?,?,?,?)
+    `).run(Date.now(), userId, chatId, massnahme, grund, JSON.stringify(belege), bio, username);
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in logProfileEvent:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+export function getProfileEvents(massnahme: string | null = null, limit = 25): any[] {
+  try {
+    const db = getDatabase();
+    return massnahme
+      ? db.prepare('SELECT * FROM profile_events WHERE massnahme = ? ORDER BY created_at DESC LIMIT ?').all(massnahme, limit)
+      : db.prepare('SELECT * FROM profile_events ORDER BY created_at DESC LIMIT ?').all(limit);
+  } catch {
+    return [];
+  }
+}
+
+export function markProfileEventsReverted(userId: number): void {
+  try {
+    getDatabase().prepare('UPDATE profile_events SET reverted = 1 WHERE user_id = ?').run(userId);
+  } catch { /* nicht kritisch */ }
 }
 
 // --- Adminrechte des Bots je Gruppe (09/2026) ---

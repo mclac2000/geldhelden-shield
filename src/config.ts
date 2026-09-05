@@ -41,6 +41,11 @@ export interface Config {
   campaignAutoBanSpreaders: boolean;
   /** Zusätzliche eigene/partnerschaftliche Telegram-Namen, die nie als Welle gelten */
   ownLinkExtras: string[];
+  // Profilprüfung beim Beitritt (Bio, Benutzername, Profilbild)
+  profileCheckEnabled: boolean;
+  profileAutoBan: boolean;
+  /** true = ein fremder Gruppenlink in der Bio genügt, ohne zweites Merkmal */
+  profileStrictMode: boolean;
   // Debug
   debugJoins: boolean;
   // Moderation Defaults
@@ -295,6 +300,13 @@ export function loadConfig(): Config {
 
   // Eigene Kanäle und Partner, die Mitglieder legitim in vielen Gruppen teilen.
   // Die verwalteten Gruppen selbst werden automatisch erfasst (ownLinks.ts).
+  // Profilprüfung: Erfassung ist harmlos und daher an, die Sperre standardmäßig
+  // aus — erst wird am Bestand gemessen, wie viele echte Mitglieder die Regel
+  // träfe (scripts/measure-profile-risk.ts).
+  const profileCheckEnabled = parseBoolean(process.env.PROFILE_CHECK_ENABLED, true);
+  const profileAutoBan = parseBoolean(process.env.PROFILE_AUTO_BAN, false);
+  const profileStrictMode = parseBoolean(process.env.PROFILE_STRICT_MODE, false);
+
   const ownLinkExtras = (process.env.OWN_LINK_EXTRAS || 'geldhelden,mclac2000,staatenlos')
     .split(',')
     .map(v => v.trim().toLowerCase())
@@ -376,6 +388,9 @@ Mehr Infos: {bio_link}`;
     campaignAutoBlock,
     campaignAutoBanSpreaders,
     ownLinkExtras,
+    profileCheckEnabled,
+    profileAutoBan,
+    profileStrictMode,
     debugJoins,
     linksLockedDefault,
     forwardLockedDefault,

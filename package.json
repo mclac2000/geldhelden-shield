@@ -13,7 +13,8 @@
     "test:identity": "ts-node scripts/test-identity.ts",
     "test:links": "ts-node scripts/test-campaign-links.ts",
     "test:startup": "ts-node scripts/test-startup-order.ts",
-    "test": "npm run test:startup && npm run test:identity && npm run test:links"
+    "test:profile": "ts-node scripts/test-profile-risk.ts",
+    "test": "npm run test:startup && npm run test:identity && npm run test:links && npm run test:profile"
   },
   "keywords": [
     "telegram",

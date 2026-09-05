@@ -418,6 +418,21 @@ async function handleJoinEvent(
     }
   }
 
+  // PROFILPRÜFUNG: Bio, Benutzername und Profilbild des Neuzugangs.
+  // Wer in seiner Bio auf eine FREMDE Telegram-Gruppe verweist, wirbt ab —
+  // das ist im Gegensatz zum Strohmann-Verhalten schon beim Beitritt sichtbar.
+  // Links auf unsere eigenen Gruppen sind ausgenommen.
+  {
+    const { pruefeProfil } = await import('./profileGuard');
+    const profil = await pruefeProfil(
+      ctx.telegram, userId, chatId, title || 'Unbekannt', userInfo.username, 'join'
+    );
+    if (profil.erledigt) {
+      lastJoinEvent = { userId, chatId, source, timestamp, decision: 'action', action: 'ban', reason: 'profil-anwerbung' };
+      return; // Skip rest of processing
+    }
+  }
+
   // Erfasse User in Baseline (nur managed)
         saveBaselineMember(
           chatId,
@@ -1442,6 +1457,41 @@ bot.command('links', async (ctx: Context) => {
   });
 });
 
+// Command: /profile [sperren|alarm|<user_id>]
+// Protokoll der Profilprüfung. Jede Entscheidung mit Grund und dem gefundenen
+// Bio-Wortlaut — damit ein Fehlalarm nachvollziehbar und rücknehmbar ist.
+bot.command('profile', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'profile', async (ctx) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const arg = (text.split(' ')[1] || 'sperren').trim();
+    const { getProfileEvents, getDatabase } = await import('./db');
+    const esc = (s: string) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const zeit = (t: number) => new Date(t).toISOString().replace('T', ' ').substring(0, 16);
+
+    let rows: any[];
+    let titel: string;
+    if (/^\d+$/.test(arg)) {
+      rows = getDatabase().prepare('SELECT * FROM profile_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').all(parseInt(arg, 10)) as any[];
+      titel = `Profil-Protokoll für ${arg}`;
+    } else if (arg === 'alarm') {
+      rows = getProfileEvents('alarm', 20); titel = 'Profil-Verdachtsfälle';
+    } else {
+      rows = getProfileEvents('sperren', 20); titel = 'Sperren durch die Profilprüfung';
+    }
+
+    let msg = `🔎 <b>${titel}</b> (${rows.length})\n\n`;
+    if (rows.length === 0) msg += 'Keine Einträge.';
+    for (const r of rows) {
+      msg += `${r.reverted ? '↩️' : r.massnahme === 'sperren' ? '🚫' : '⚠️'} ${zeit(r.created_at)} ` +
+        `<code>${r.user_id}</code>${r.username ? ' @' + esc(r.username) : ''}\n`;
+      msg += `   ${esc(r.grund || '')}\n`;
+      if (r.bio) msg += `   Bio: <code>${esc(String(r.bio).substring(0, 90))}</code>\n`;
+    }
+    msg += `\n<i>Rücknahme: /pardon &lt;user_id&gt;</i>`;
+    await ctx.reply(msg.substring(0, 4000), { parse_mode: 'HTML' });
+  });
+});
+
 // Command: /unban <user_id|@username>
 bot.command('unban', async (ctx: Context) => {
   await handleAdminCommand(ctx, 'unban', async (ctx, ...args) => {
@@ -2042,6 +2092,32 @@ bot.on('callback_query', async (ctx: Context) => {
       return;
     }
 
+    // Aus einem Profil-Verdacht nachträglich eine Sperre machen
+    if (data.startsWith('profil_ban:')) {
+      if (!ctx.from || !isAdmin(ctx.from.id)) {
+        await ctx.answerCbQuery('❌ Du bist kein Administrator');
+        return;
+      }
+      const uid = parseInt(data.split(':')[1], 10);
+      if (isNaN(uid)) { await ctx.answerCbQuery('❌ Ungültige User-ID'); return; }
+      await ctx.answerCbQuery('⏳ Sperre...');
+      try {
+        const { banUserGlobally } = await import('./telegram');
+        const r = await banUserGlobally(uid, `Anwerbe-Profil, bestätigt durch Admin ${ctx.from.id}`, true);
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+        await sendToAdminLogChat(
+          `🚫 <b>Anwerbe-Profil gesperrt</b>\n\n🆔 <code>${uid}</code>\n` +
+            `👤 Durch: ${ctx.from.username || ctx.from.first_name || 'Admin'}\n` +
+            `✅ In ${r.groups} Gruppen gesperrt.`,
+          ctx, true
+        );
+      } catch (error: unknown) {
+        console.error('[Profil][BAN-Knopf] Fehler:', error instanceof Error ? error.message : String(error));
+        await ctx.answerCbQuery('❌ Fehler');
+      }
+      return;
+    }
+
     // Rücknahme einer automatischen Sperre (Format "pardon_user:userId")
     // Jede automatische Impersonations-Sperre ist damit mit einem Klick reversibel.
     if (data.startsWith('pardon_user:')) {
@@ -2064,6 +2140,8 @@ bot.on('callback_query', async (ctx: Context) => {
         // nächsten Beitritt sofort wieder sperren.
         addIdentityExempt(pardonId, ctx.from.id, 'Sperre durch Admin aufgehoben');
         markIdentityEventsReverted(pardonId);
+        const { markProfileEventsReverted } = await import('./db');
+        markProfileEventsReverted(pardonId);
         const res = await unbanUserInAllGroups(pardonId, `Sperre aufgehoben durch Admin ${ctx.from.id}`);
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
         await sendToAdminLogChat(
