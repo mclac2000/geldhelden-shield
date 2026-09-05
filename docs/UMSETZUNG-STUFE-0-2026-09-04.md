@@ -453,3 +453,120 @@ Vorschlag (halber Tag, vollautomatisch, kein Mensch im Prozess):
 Das trifft Schritt 2 und 3 des Angriffs, ist vollständig automatisch, hat einen klaren Beweis (derselbe fremde Link aus mehreren Quellen) und keine Nebenwirkung auf normale Mitglieder.
 
 **Wenn du willst, baue ich das als Nächstes.** Es ist aus meiner Sicht der wirksamste verbleibende Hebel — deutlich wirksamer als das Beitritts-Tor.
+
+---
+
+# Profilprüfung beim Beitritt — Messung am Bestand (05.09.2026)
+
+Marcos Auflage: *"Vorher an den echten Daten messen. Nenn mir die Zahl, bevor sie
+scharf geht."* Gemessen mit `scripts/measure-profile-risk.ts` über alle 7.196
+bekannten Konten (`COUNT(DISTINCT user_id)`, nicht Zeilen).
+
+## Ergebnis
+
+| Kennzahl | Wert |
+|---|---|
+| Konten insgesamt | 7.196 |
+| davon über `getChat` erreichbar | **137** |
+| ohne Antwort | 7.059 |
+| davon mit ausgefüllter Bio | 35 |
+| **würden gesperrt (Standard)** | **3** |
+| würden gesperrt (streng) | 5 |
+| nur gemeldet (Alarm) | 2 |
+
+Kein Botschafter, kein Team-Mitglied, kein echtes Mitglied unter den Treffern.
+
+## WICHTIG: `getChat` erreicht nur ~2 % des Bestands
+
+Das ist der zentrale Befund und darf in keiner künftigen Messung übersehen werden.
+
+| Beitritt am | beigetreten | per `getChat` erreicht |
+|---|---|---|
+| 05.09. | 9 | 9 (100 %) |
+| 04.09. | 14 | 13 (93 %) |
+| 03.09. | 18 | 1 (6 %) |
+| 01.09. | 19 | 0 |
+| 31.08. | 19 | 0 |
+
+Der Schnitt liegt exakt am letzten Bot-Neustart. Telegram beantwortet
+`getChat(user_id)` nur für Konten, die der Bot in seiner **laufenden Sitzung**
+gesehen hat. Daraus folgt:
+
+- **Für den Einsatzfall ist das kein Problem.** Im Moment des Beitritts sieht der
+  Bot den User gerade — Trefferquote der letzten zwei Tage: 22 von 23.
+- **Für Messungen am Altbestand ist `getChat` unbrauchbar.** Wer künftig eine
+  Regel „am Bestand" misst, misst in Wahrheit die letzten ein bis zwei Tage.
+  Die Aussage „0 Fehlalarme unter 7.196" wäre falsch; richtig ist „0 Fehlalarme
+  unter den 137 prüfbaren".
+
+## Die Gegenprobe ist der eigentliche Beweis
+
+Aussagekräftiger als die Trefferliste sind die **30 Bios, die nicht getroffen
+wurden**. Darunter mehrere mit Werbeabsicht:
+
+- `https://shop.alps-pure.com/?ref=107` (Affiliate-Link)
+- `www.huderz.com / 60k Youtube Täglich Bitcoin & Crypto`
+- `alkaline-bathing.com & amanita-academy.com`
+- `Mein Wirken: www.hanfliebe.com`
+- `martinlanger.de kambopower.com`
+
+Keine davon enthält einen **Telegram-Gruppenlink**. Genau darauf und nur darauf
+greift die Regel. Wäre sie auf „beliebiger Werbelink" ausgelegt worden, hätte sie
+sechs bis acht echte Mitglieder getroffen — die enge Auslegung war richtig.
+
+## Bewusste Lücken (falsch-negativ, nicht falsch-positiv)
+
+Zwei Bios sind erkennbar Anwerbung, werden aber **nicht** getroffen, weil sie
+keinen `t.me`-Link enthalten:
+
+- `Trusted & Secure Payment Gateway—Fresh Documents is available here`
+- `Viens te faire plein de sous zehma dm` (frz. „Komm, mach dir Kohle, DM")
+
+Das ist der Preis der engen Auslegung und bewusst so gelassen. Wer die Regel
+erweitern will, misst vorher erneut gegen die Bios echter Mitglieder.
+
+## Was scharf ist
+
+```
+PROFILE_CHECK_ENABLED=true
+PROFILE_AUTO_BAN=true      # seit 05.09.2026
+PROFILE_STRICT_MODE=false  # bleibt aus
+```
+
+`PROFILE_STRICT_MODE` bleibt aus, obwohl beide zusätzlichen Treffer korrekt
+waren: die Datenbasis ist mit 35 Bios zu dünn, um „ein fremder Gruppenlink
+genügt" zu rechtfertigen. Ein Botschafter, der auf eine Partnergruppe außerhalb
+der Freigabeliste verlinkt, würde gesperrt. Im milden Modus wird er nur gemeldet
+— mit Knopf „JETZT SPERREN", falls er doch einer ist.
+
+## Nachgeholte Bestandsfälle
+
+Der laufende Bot prüft nur bei Beitritt und Nachricht; die fünf gefundenen
+Bestandskonten wären nie geprüft worden. Nachgeholt mit
+`scripts/apply-profile-backlog.ts` — durch dieselbe Logik wie im Betrieb, also
+mit Protokoll und Rücknahmeknopf. Drei gesperrt, zwei gemeldet.
+
+Alle drei Sperren haben denselben Wortlaut in der Bio: **„Kopiere es von ihm"**
+plus Einladungslink. Das ist keine Ähnlichkeit, das ist dieselbe Anleitung.
+
+## Rücknahmeweg
+
+- Jede Entscheidung steht in `profile_events` mit Wortlaut der Bio, den
+  ausgelösten Belegen und einem `reverted`-Flag
+- Jede Meldung im Admin-Chat trägt den Knopf `↩️ SPERRE AUFHEBEN`
+  (`pardon_user:<id>`)
+- `PROFILE_AUTO_BAN=false` in der `.env` schaltet die Automatik sofort ab
+
+## Docker-Falle beim Umschalten
+
+`docker compose restart` lädt die `.env` **nicht** neu — der Container behält die
+Variablen aus dem Moment seiner Erzeugung. Nach jeder `.env`-Änderung gehört
+`docker compose up -d` (erzeugt neu) und danach die Kontrolle:
+
+```bash
+docker exec geldhelden-shield-bot printenv PROFILE_AUTO_BAN
+```
+
+Das ist beim Scharfschalten aufgefallen: Der Schalter stand in der Datei auf
+`true`, im laufenden Prozess aber weiter auf `false`. Der Service heißt im
+Compose-File übrigens `bot`, nicht `shield-bot`.
