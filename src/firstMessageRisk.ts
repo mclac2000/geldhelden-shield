@@ -42,28 +42,42 @@ const GROSS_DIAKRITISCH = /[ÀÁÂÃÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕØÙÚÛÝ
  * Der Unterschied ist die Häufung von Diakritika in GROSSbuchstaben, die im
  * Deutschen nicht vorkommen.
  */
-export function istVerfremdeterName(name: string): { verfremdet: boolean; grund: string } {
-  if (!name) return { verfremdet: false, grund: '' };
+export function istVerfremdeterName(
+  name: string
+): { verfremdet: boolean; grund: string; punkte: number } {
+  const nichts = { verfremdet: false, grund: '', punkte: 0 };
+  if (!name) return nichts;
 
   if (hasInvisibleChars(name)) {
-    return { verfremdet: true, grund: 'unsichtbare Steuerzeichen im Namen' };
-  }
-  if (hasMixedScript(name)) {
-    return { verfremdet: true, grund: 'gemischte Schriftsysteme im Namen' };
+    return { verfremdet: true, grund: 'unsichtbare Steuerzeichen im Namen', punkte: 20 };
   }
 
-  // Verschiedene großgeschriebene Sonderbuchstaben zählen, deutsche Umlaute
-  // ausgenommen. Zwei verschiedene sind schon sehr ungewöhnlich.
+  // Verschiedene großgeschriebene Sonderbuchstaben, deutsche Umlaute
+  // ausgenommen. „LÓUÎ", „ZÔHÑG", „YÛSÎ" — im Bestand von 7.196 Konten hat
+  // genau EINES außerhalb der bekannten Betrüger diesen Grund ausgelöst.
   const treffer = name.match(GROSS_DIAKRITISCH) || [];
   const verschiedene = new Set(treffer).size;
   if (verschiedene >= 2) {
     return {
       verfremdet: true,
+      punkte: 20,
       grund: `${verschiedene} verschiedene verfremdete Großbuchstaben (${[...new Set(treffer)].join(', ')})`,
     };
   }
 
-  return { verfremdet: false, grund: '' };
+  // Gemischte Schriftsysteme sind hier BEWUSST nur ein schwaches Signal.
+  //
+  // Die Messung am Bestand ergab 41 Konten mit lateinisch-kyrillisch
+  // gemischten Namen — „Hùng Иванов", „Juan Волков", „Kishan Смирнов".
+  // Viele davon sehen nach Bot-Farm aus, beweisen lässt sich das aber nicht,
+  // und ein Mitglied mit gemischtsprachigem Namen ist völlig normal. Bei 20
+  // Punkten wäre das ein Viertel des Weges zur Sperre für etwas, das nichts
+  // über die Absicht aussagt. Deshalb 8.
+  if (hasMixedScript(name)) {
+    return { verfremdet: true, grund: 'gemischte Schriftsysteme im Namen', punkte: 8 };
+  }
+
+  return nichts;
 }
 
 // Wird unten nur noch für die Doku gebraucht, damit klar bleibt, dass die
@@ -248,9 +262,9 @@ export function bewerteErstnachricht(e: ErstnachrichtEingabe): ErstnachrichtBefu
   // --- Gruppe D: Konto und Zeitpunkt ---------------------------------------
   const namensBefund = istVerfremdeterName(e.anzeigename);
   if (namensBefund.verfremdet) {
-    punkte += 20;
+    punkte += namensBefund.punkte;
     signale.push('verfremdeter_name');
-    belege.push(`Verfremdeter Anzeigename "${e.anzeigename}": ${namensBefund.grund}`);
+    belege.push(`Verfremdeter Anzeigename "${e.anzeigename}": ${namensBefund.grund} (${namensBefund.punkte} Punkte)`);
     gruppenGetroffen.add('konto');
   }
 

@@ -41,7 +41,7 @@ function main(): void {
     const b = istVerfremdeterName(name);
     if (!b.verfremdet) continue;
     if (isTeamMember(m.user_id)) { team++; continue; }
-    treffer.push({ ...m, name, grund: b.grund, bekannt: GESPERRTE_WELLE.has(m.user_id) });
+    treffer.push({ ...m, name, grund: b.grund, punkte: b.punkte, bekannt: GESPERRTE_WELLE.has(m.user_id) });
   }
 
   const bekannt = treffer.filter(t => t.bekannt).length;
@@ -54,6 +54,9 @@ function main(): void {
   console.log(`davon bereits gesperrte Betrüger:     ${bekannt}`);
   console.log(`davon Team (ausgenommen):             ${team}`);
   console.log(`ÜBRIGE — potenzielle Fehlalarme:      ${neu.length}\n`);
+  const stark = neu.filter(t => t.punkte >= 20);
+  console.log(`davon mit STARKEM Signal (20 Punkte): ${stark.length}`);
+  console.log(`davon mit schwachem Signal (8 Punkte): ${neu.length - stark.length}\n`);
 
   console.log('--- Die übrigen im Wortlaut ---');
   for (const t of neu) {
