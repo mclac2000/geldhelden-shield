@@ -136,9 +136,20 @@ async function melde(
 ): Promise<void> {
   try {
     const { Markup } = await import('telegraf');
+    // In den ersten 48 Stunden nach dem Scharfschalten ist jede Sperre eine
+    // Stichprobe auf die neue Regel — sie wird deshalb ausdrücklich als solche
+    // gekennzeichnet, statt in der Masse der Meldungen unterzugehen.
+    const inProbezeit = config.firstMessageArmedAt !== null
+      && Date.now() - config.firstMessageArmedAt < 48 * 3600 * 1000;
+
     let m = nurVerdacht
       ? '⚠️ <b>VERDACHT: Werbung in der Erstnachricht</b>\n\n'
       : '🚫 <b>GESPERRT: Werbung in der Erstnachricht</b>\n\n';
+    if (inProbezeit && !nurVerdacht) {
+      const stunden = Math.floor((Date.now() - (config.firstMessageArmedAt as number)) / 3600000);
+      m = '🔬 <b>STICHPROBE — neue Regel, Stunde ' + stunden + ' von 48</b>\n' +
+          '<i>Bitte prüfen: war diese Sperre richtig?</i>\n\n' + m;
+    }
     m += `🆔 User ID: <code>${userId}</code>\n`;
     if (ctx.from?.username) m += `👤 Benutzername: @${esc(ctx.from.username)}\n`;
     const anzeige = `${ctx.from?.first_name || ''} ${ctx.from?.last_name || ''}`.trim();
