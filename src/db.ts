@@ -1042,6 +1042,53 @@ export function initDatabase(): any {
     }
   }
 
+  // Migration: first_message_events + first_message_counts (09/2026)
+  //
+  // WICHTIG: first_message_events ist die ERSTE Stelle im ganzen System, an der
+  // ein Nachrichtentext gespeichert wird. Vorher gab es nirgends einen
+  // Nachrichtenbestand — scam_events hält nur Punktzahl und Gründe. Deshalb
+  // konnte die Erstnachrichten-Regel nicht rückwirkend gemessen werden; diese
+  // Tabelle schafft die Grundlage dafür, dass es beim nächsten Mal geht.
+  //
+  // Gespeichert wird NUR, was mindestens die Alarmschwelle erreicht — nicht
+  // jede Nachricht der Gruppe.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS first_message_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        chat_id TEXT,
+        username TEXT,
+        anzeigename TEXT,
+        nachricht_nr INTEGER NOT NULL,
+        punkte INTEGER NOT NULL,
+        inhaltliche_gruppen INTEGER NOT NULL,
+        massnahme TEXT NOT NULL,
+        grund TEXT,
+        signale TEXT,
+        belege TEXT,
+        text TEXT,
+        durchgesetzt INTEGER NOT NULL DEFAULT 0,
+        reverted INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_fme_user ON first_message_events(user_id);
+      CREATE INDEX IF NOT EXISTS idx_fme_created ON first_message_events(created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS first_message_counts (
+        user_id INTEGER NOT NULL,
+        chat_id TEXT NOT NULL,
+        anzahl INTEGER NOT NULL DEFAULT 0,
+        erster_kontakt INTEGER NOT NULL,
+        PRIMARY KEY (user_id, chat_id)
+      );
+    `);
+  } catch (error: any) {
+    if (!error.message.includes('duplicate column name') && !error.message.includes('already exists')) {
+      console.warn('[DB] Migration Warnung (first_message_events):', error.message);
+    }
+  }
+
   // Migration: scan_runs — Lauf-Protokoll des Baseline-Scans (09/2026)
   //
   // Bis dahin wurde NICHTS über Scan-Läufe festgehalten: scan.ts rief
@@ -4084,7 +4131,116 @@ export function getProfileEvents(massnahme: string | null = null, limit = 25): a
 export function markProfileEventsReverted(userId: number): void {
   try {
     getDatabase().prepare('UPDATE profile_events SET reverted = 1 WHERE user_id = ?').run(userId);
+    // Die Rücknahme muss BEIDE Protokolle erfassen, sonst steht in einem davon
+    // weiter eine Sperre, die es nicht mehr gibt.
+    getDatabase().prepare('UPDATE first_message_events SET reverted = 1 WHERE user_id = ?').run(userId);
   } catch { /* nicht kritisch */ }
+}
+
+// --- Erstnachrichten-Prüfung (09/2026) ---
+
+/**
+ * Zählt die Nachricht dieses Kontos in dieser Gruppe hoch und liefert die
+ * neue Nummer sowie den Zeitpunkt der ersten Nachricht.
+ *
+ * Der erste Kontakt stammt aus baseline_members, wenn dort ein Beitritt
+ * vermerkt ist — sonst aus dieser Nachricht selbst.
+ */
+export function zaehleUndHoleNachrichtNr(
+  userId: number, chatId: string
+): { nummer: number; ersterKontakt: number | null } {
+  try {
+    const db = getDatabase();
+    const jetzt = Date.now();
+
+    const beitritt = db.prepare(
+      'SELECT MIN(first_seen_at) AS t FROM baseline_members WHERE user_id = ? AND chat_id = ?'
+    ).get(userId, chatId) as any;
+
+    db.prepare(`
+      INSERT INTO first_message_counts (user_id, chat_id, anzahl, erster_kontakt)
+      VALUES (?, ?, 1, ?)
+      ON CONFLICT(user_id, chat_id) DO UPDATE SET anzahl = anzahl + 1
+    `).run(userId, chatId, beitritt?.t ?? jetzt);
+
+    const r = db.prepare(
+      'SELECT anzahl, erster_kontakt FROM first_message_counts WHERE user_id = ? AND chat_id = ?'
+    ).get(userId, chatId) as any;
+
+    return { nummer: r?.anzahl ?? 1, ersterKontakt: r?.erster_kontakt ?? null };
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in zaehleUndHoleNachrichtNr:', error instanceof Error ? error.message : String(error));
+    // Im Fehlerfall so tun, als wäre das Konto längst bekannt — dann wird
+    // nicht geprüft. Lieber eine Prüfung zu wenig als eine falsche Sperre.
+    return { nummer: 9999, ersterKontakt: null };
+  }
+}
+
+export interface FirstMessageEvent {
+  userId: number; chatId: string | null; username: string | null;
+  anzeigename: string; nachrichtNr: number; punkte: number;
+  inhaltlicheGruppen: number; massnahme: string; grund: string;
+  signale: string[]; belege: string[]; text: string; durchgesetzt: boolean;
+}
+
+export function logFirstMessageEvent(e: FirstMessageEvent): void {
+  try {
+    getDatabase().prepare(`
+      INSERT INTO first_message_events
+        (created_at, user_id, chat_id, username, anzeigename, nachricht_nr, punkte,
+         inhaltliche_gruppen, massnahme, grund, signale, belege, text, durchgesetzt)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      Date.now(), e.userId, e.chatId, e.username, e.anzeigename, e.nachrichtNr,
+      e.punkte, e.inhaltlicheGruppen, e.massnahme, e.grund,
+      JSON.stringify(e.signale), JSON.stringify(e.belege),
+      (e.text || '').substring(0, 2000), e.durchgesetzt ? 1 : 0
+    );
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in logFirstMessageEvent:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+export function getFirstMessageEvents(massnahme: string | null = null, limit = 25): any[] {
+  try {
+    const db = getDatabase();
+    return massnahme
+      ? db.prepare('SELECT * FROM first_message_events WHERE massnahme = ? ORDER BY created_at DESC LIMIT ?').all(massnahme, limit)
+      : db.prepare('SELECT * FROM first_message_events ORDER BY created_at DESC LIMIT ?').all(limit);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Kennzahlen für die Kalibrierung.
+ *
+ * COUNT(DISTINCT user_id) — nicht COUNT(*). Ein einzelnes Konto erzeugt bis zu
+ * fünf Ereignisse (eine je geprüfter Nachricht) in jeder Gruppe, in der es
+ * schreibt. Zeilen zu zählen hätte dieselbe Verzerrung erzeugt wie beim
+ * Wochenbericht, wo aus 24 Personen 755 „Banns" wurden.
+ */
+export function getFirstMessageStats(seit: number): {
+  sperrenPersonen: number; alarmPersonen: number;
+  sperrenZeilen: number; alarmZeilen: number; durchgesetzt: number;
+} {
+  try {
+    const db = getDatabase();
+    const z = (massnahme: string, spalte: string) => (db.prepare(
+      `SELECT COUNT(${spalte}) AS n FROM first_message_events WHERE massnahme = ? AND created_at >= ?`
+    ).get(massnahme, seit) as any)?.n ?? 0;
+    return {
+      sperrenPersonen: z('sperren', 'DISTINCT user_id'),
+      alarmPersonen: z('alarm', 'DISTINCT user_id'),
+      sperrenZeilen: z('sperren', '*'),
+      alarmZeilen: z('alarm', '*'),
+      durchgesetzt: (db.prepare(
+        'SELECT COUNT(DISTINCT user_id) AS n FROM first_message_events WHERE durchgesetzt = 1 AND created_at >= ?'
+      ).get(seit) as any)?.n ?? 0,
+    };
+  } catch {
+    return { sperrenPersonen: 0, alarmPersonen: 0, sperrenZeilen: 0, alarmZeilen: 0, durchgesetzt: 0 };
+  }
 }
 
 // --- Adminrechte des Bots je Gruppe (09/2026) ---

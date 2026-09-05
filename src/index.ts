@@ -1460,6 +1460,43 @@ bot.command('links', async (ctx: Context) => {
 // Command: /profile [sperren|alarm|<user_id>]
 // Protokoll der Profilprüfung. Jede Entscheidung mit Grund und dem gefundenen
 // Bio-Wortlaut — damit ein Fehlalarm nachvollziehbar und rücknehmbar ist.
+// /erstnachricht [sperren|alarm] — zeigt, was die Erstnachrichten-Prüfung
+// bewertet hat. Im Beobachtungsmodus ist das die Datengrundlage dafür, ob die
+// Regel scharf gestellt werden darf.
+bot.command('erstnachricht', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'erstnachricht', async (ctx) => {
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const arg = (text.split(' ')[1] || '').trim();
+    const { getFirstMessageEvents, getFirstMessageStats } = await import('./db');
+
+    const seit7 = Date.now() - 7 * 24 * 3600 * 1000;
+    const s = getFirstMessageStats(seit7);
+
+    let m = '<b>📨 Erstnachrichten-Prüfung</b>\n\n';
+    m += `Durchsetzung: <b>${config.firstMessageAutoBan ? 'AN — sperrt automatisch' : 'AUS — nur Beobachtung'}</b>\n`;
+    m += `Erfassung: ${config.firstMessageCheckEnabled ? 'an' : 'aus'}\n\n`;
+    m += '<b>Letzte 7 Tage</b> (Personen, nicht Zeilen):\n';
+    m += `• Würden gesperrt: <b>${s.sperrenPersonen}</b> Personen (${s.sperrenZeilen} Nachrichten)\n`;
+    m += `• Nur Alarm: <b>${s.alarmPersonen}</b> Personen (${s.alarmZeilen} Nachrichten)\n`;
+    m += `• Tatsächlich gesperrt: <b>${s.durchgesetzt}</b>\n\n`;
+
+    const liste = getFirstMessageEvents(arg === 'alarm' ? 'alarm' : arg === 'sperren' ? 'sperren' : null, 10);
+    if (liste.length === 0) {
+      m += '<i>Noch keine Bewertungen erfasst.</i>';
+    } else {
+      m += `<b>Letzte ${liste.length} Bewertungen:</b>\n`;
+      for (const e of liste) {
+        const wann = new Date(e.created_at).toISOString().substring(5, 16).replace('T', ' ');
+        const sym = e.massnahme === 'sperren' ? (e.durchgesetzt ? '🚫' : '🟠') : '⚠️';
+        m += `\n${sym} <code>${e.user_id}</code> @${e.username || '-'} — ${e.punkte} P., ${e.inhaltliche_gruppen} Gr. (${wann})\n`;
+        m += `   <code>${String(e.text || '').substring(0, 110).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code>\n`;
+      }
+    }
+    m += '\n<i>/erstnachricht sperren | alarm</i>';
+    await ctx.reply(m, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+  });
+});
+
 bot.command('profile', async (ctx: Context) => {
   await handleAdminCommand(ctx, 'profile', async (ctx) => {
     const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
@@ -1810,6 +1847,21 @@ bot.on('message', async (ctx: Context, next) => {
       return; // Early return - Scam wurde bereits behandelt
     }
     
+    // 1a. Erstnachrichten-Prüfung: Was ein neues Konto in seinen ersten
+    // Nachrichten schreibt. Läuft NACH der Scam-Erkennung (deren Löschung hat
+    // Vorrang) und VOR der Link-Erfassung, weil ein Werbeangebot ohne Link
+    // sonst durch alle weiteren Stufen fällt — genau das ist am 05.09.2026
+    // passiert.
+    try {
+      const { pruefeErstnachricht } = await import('./firstMessageGuard');
+      const erst = await pruefeErstnachricht(ctx);
+      if (erst.erledigt) {
+        return; // Konto gesperrt, Nachricht entfernt
+      }
+    } catch (erstError: unknown) {
+      console.error('[Erstnachricht] Fehler im Handler:', erstError instanceof Error ? erstError.message : String(erstError));
+    }
+
     // 1b. Werbe-Wellen: Ziel-Links erfassen und gesperrte Links entfernen.
     // Läuft NACH der Scam-Prüfung (deren Löschung hat Vorrang) und unabhängig
     // von der Link-Policy, die nur die ersten 30 Minuten nach Beitritt greift.

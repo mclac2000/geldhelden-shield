@@ -46,6 +46,10 @@ export interface Config {
   profileAutoBan: boolean;
   /** true = ein fremder Gruppenlink in der Bio genügt, ohne zweites Merkmal */
   profileStrictMode: boolean;
+  /** Erstnachrichten-Prüfung: Bewertung und Protokollierung */
+  firstMessageCheckEnabled: boolean;
+  /** Erstnachrichten-Prüfung: sperrt automatisch */
+  firstMessageAutoBan: boolean;
   // Debug
   debugJoins: boolean;
   // Moderation Defaults
@@ -306,6 +310,10 @@ export function loadConfig(): Config {
   const profileCheckEnabled = parseBoolean(process.env.PROFILE_CHECK_ENABLED, true);
   const profileAutoBan = parseBoolean(process.env.PROFILE_AUTO_BAN, false);
   const profileStrictMode = parseBoolean(process.env.PROFILE_STRICT_MODE, false);
+  // Die Erfassung ist harmlos und daher an; die Durchsetzung bleibt aus, bis
+  // die Trefferzahl an echten Nachrichten gemessen wurde.
+  const firstMessageCheckEnabled = parseBoolean(process.env.FIRST_MESSAGE_CHECK_ENABLED, true);
+  const firstMessageAutoBan = parseBoolean(process.env.FIRST_MESSAGE_AUTO_BAN, false);
 
   const ownLinkExtras = (process.env.OWN_LINK_EXTRAS || 'geldhelden,mclac2000,staatenlos')
     .split(',')
@@ -391,6 +399,8 @@ Mehr Infos: {bio_link}`;
     profileCheckEnabled,
     profileAutoBan,
     profileStrictMode,
+    firstMessageCheckEnabled,
+    firstMessageAutoBan,
     debugJoins,
     linksLockedDefault,
     forwardLockedDefault,
