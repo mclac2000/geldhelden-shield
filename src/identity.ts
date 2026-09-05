@@ -118,8 +118,13 @@ export function normalizePlainName(input: string): string {
  * dass fast alle Treffer auf "unsichtbare Zeichen" von Emoji in Anzeigenamen kamen —
  * also von harmlosen Mitgliedern.
  */
+// Eine vollständige Emoji-Sequenz. Die Hautton-Modifikatoren U+1F3FB–U+1F3FF
+// gehören ZWINGEND in die Verbinderklasse: ohne sie bricht die Sequenz bei
+// „🧘🏼‍♀️" nach dem 🧘 ab, der ZWJ dahinter bleibt stehen und wird als
+// unsichtbares Steuerzeichen gewertet. In der Messung am Bestand hat genau
+// das zwei echte Mitglieder getroffen, die seit Januar dabei sind.
 const EMOJI_SEQUENCE =
-  /\p{Extended_Pictographic}(?:[︀-️‍⃣]*\p{Extended_Pictographic})*[︀-️⃣]*/gu;
+  /\p{Extended_Pictographic}(?:[\u{1F3FB}-\u{1F3FF}\uFE00-\uFE0F\u200D\u20E3\u2640\u2642]*\p{Extended_Pictographic})*[\u{1F3FB}-\u{1F3FF}\uFE00-\uFE0F\u20E3\u2640\u2642]*/gu;
 
 /**
  * Enthält der Text unsichtbare Steuerzeichen an einer Stelle, wo sie nichts zu

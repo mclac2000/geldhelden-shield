@@ -135,6 +135,23 @@ for (const [first, last] of [
   ['Jürgen', 'Müller'], ['Andreas', 'Hoffmann'], ['Geld', null], ['Held', null],
 ] as [string, string | null][]) {
   check(`unberührt: ${first} ${last || ''}`, verdictFor(first, last, null), 'none');
+// --- Emoji-Sequenzen mit Hautton (gefunden in der Messung am 05.09.2026) ---
+// Zwei echte Mitglieder seit Januar trugen "🧘🏼‍♀️" bzw. "🧑🏼‍🌾" im Namen.
+// Ohne die Hautton-Modifikatoren in der Verbinderklasse brach die Sequenz nach
+// dem ersten Emoji ab, der ZWJ dahinter blieb stehen und galt als
+// Verschleierung.
+console.log('\n=== Emoji-Sequenzen mit Hautton ===');
+check('Yoga-Emoji mit Hautton und ZWJ ist unauffaellig',
+  hasInvisibleChars('Jasmin Schwarberg \u{1F525}\u{1F32A}\uFE0F\u{1F9D8}\u{1F3FC}\u200D\u2640\uFE0F'), false);
+check('Bauern-Emoji mit Hautton und ZWJ ist unauffaellig',
+  hasInvisibleChars('Gudrun \u{1F9D1}\u{1F3FC}\u200D\u{1F33E}'), false);
+check('Familien-Emoji (mehrfach ZWJ) ist unauffaellig',
+  hasInvisibleChars('\u{1F468}\u200D\u{1F469}\u200D\u{1F466} Familie'), false);
+check('ZWJ OHNE Emoji davor bleibt auffaellig',
+  hasInvisibleChars('\u200DDon Pedro'), true);
+check('Zero-Width mitten im Wort bleibt auffaellig',
+  hasInvisibleChars('Geld\u200Bhelden'), true);
+
 }
 
 console.log(`\n${'='.repeat(50)}`);
