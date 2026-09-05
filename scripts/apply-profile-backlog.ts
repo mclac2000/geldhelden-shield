@@ -26,6 +26,11 @@ async function main(): Promise<void> {
   }
 
   const bot = new Telegraf(config.botToken);
+  // Ohne das kann banUserGlobally() nicht sperren — im Betrieb erledigt das
+  // index.ts beim Start, im Skript muss es hier passieren.
+  const { setBotInstance } = await import('../src/telegram');
+  setBotInstance(bot);
+
   console.log(`Nachträgliche Profilprüfung für ${ids.length} Konten`);
   console.log(`PROFILE_AUTO_BAN=${config.profileAutoBan} PROFILE_STRICT_MODE=${config.profileStrictMode}\n`);
 
