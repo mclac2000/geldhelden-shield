@@ -717,3 +717,117 @@ beim nächsten Mal möglich.
 Ansehen mit `/erstnachricht`. Die Zahlen dort sind
 `COUNT(DISTINCT user_id)` — ein Konto erzeugt bis zu fünf Ereignisse je Gruppe,
 Zeilen zu zählen hätte dieselbe Verzerrung erzeugt wie beim Wochenbericht.
+
+---
+
+# Scharfschaltung der Erstnachrichten-Prüfung (05.09.2026, 10:57 UTC)
+
+## Der Fall „Mehdi" — geprüft, Schwelle nicht erreicht
+
+Marcos zweiter Screenshot: Konto „Mehdi", zwei Nachrichten direkt nacheinander,
+„Hi" und „I want to make money", in „Bitcoin & alternative Währungen".
+
+Konto **5310006124 @Cartline1**, geprüft am Bestand:
+
+| Merkmal | Befund |
+|---|---|
+| Beitritt | 05.09. 10:51:21 UTC |
+| letzte Aktivität | 10:51:33 — zwölf Sekunden, die beiden Nachrichten |
+| Bio | **leer** |
+| Profilbild | `AQADdQ5rGzlAQFEB` — **einziges Konto damit**, keine Dublette |
+| Gruppen | **1** (nicht mehrere gleichzeitig) |
+| Konto-ID | 5310006124 → Registrierung um Anfang 2022, **kein frisches Konto** |
+| Scam-Events | 0 |
+| Cluster | 0 |
+| Status | bereits gesperrt — **manuell durch Marco**, 10:54:00, per Cross-Ban auf 53 Gruppen |
+
+**Die Regel hat ihn gesehen und durchgelassen.** `first_message_counts` steht
+für dieses Konto auf 2 — beide Nachrichten wurden bewertet;
+`first_message_events` ist leer, die Bewertung lag unter der Alarmschwelle.
+
+Nachgerechnet:
+
+```
+"Hi"                   →  10 Punkte, 0 inhaltliche Gruppen → keine
+"I want to make money" →  10 Punkte, 0 inhaltliche Gruppen → keine
+beide zusammen         →  10 Punkte, 0 inhaltliche Gruppen → keine
+```
+
+Die 10 Punkte sind ausschließlich „Nachricht kurz nach Beitritt". Nötig für
+eine Sperre: 70 Punkte und zwei inhaltliche Gruppen.
+
+**Bewertung: die Regel liegt hier richtig, und sie soll nicht geändert werden.**
+Um „I want to make money" zu treffen, müsste „make money" ein Werbesignal
+werden. In einer Community, deren Gruppen „Bitcoin & alternative Währungen"
+und „Geldhelden" heißen, wäre das ein Massen-Fehlalarm. Kein einziges der
+harten Signale — mehrere Gruppen, gestohlenes Bild, frisches Konto — trifft zu.
+Er kann genauso gut ein neues Mitglied mit schlechtem Deutsch sein.
+
+Marcos manuelle Sperre bleibt selbstverständlich bestehen. Der Unterschied ist:
+ein Mensch darf nach Bauchgefühl sperren, eine Automatik nicht.
+
+## Messung vor dem Umlegen
+
+Drei Quellen, jede mit benannter Schwäche (`scripts/measure-first-message.ts`):
+
+| Quelle | Umfang | würden gesperrt |
+|---|---|---|
+| A) Echte Nachrichten seit Erfassungsbeginn | 3 Nachrichten, 2 Konten | **0** |
+| B) Bios echter Mitglieder als Ersatzstichprobe | 19 Bios | **0** (auch 0 Alarme) |
+| C) Positivkontrolle: die 6 bekannten Betrüger | 6 | 4 gesperrt, 2 Alarm |
+
+Quelle A ist nach wenigen Stunden praktisch leer — das ist die Wahrheit und
+kein Argument für irgendetwas. Quelle B trägt die Entscheidung: 19 echte,
+selbstgeschriebene Texte, bewertet im ungünstigsten Fall („gerade beigetreten,
+erste Nachricht", also mit allen Zeitzuschlägen), null Treffer, nicht einmal
+ein Alarm. Quelle C zeigt, dass die Regel selbst bei den kurzen Bios der
+Betrüger 135 Punkte aus 3 Gruppen erreicht.
+
+## Stand
+
+```
+FIRST_MESSAGE_CHECK_ENABLED=true
+FIRST_MESSAGE_AUTO_BAN=true          # scharf seit 05.09.2026 10:57 UTC
+FIRST_MESSAGE_ARMED_AT=2026-09-05T10:57:56Z
+```
+
+Im Container geprüft mit `printenv`, nicht in der Datei nachgesehen:
+`true / true / 2026-09-05T10:57:56Z`.
+
+Die Zwei-Gruppen-Regel bleibt unverändert. Name und Zeitpunkt zählen weiterhin
+nicht als inhaltliche Gruppe und können eine Sperre nie allein tragen.
+
+## Die ersten 48 Stunden
+
+Jede Sperre wird in dieser Zeit im Admin-Chat mit einem zusätzlichen Kopf
+gemeldet:
+
+```
+🔬 STICHPROBE — neue Regel, Stunde N von 48
+Bitte prüfen: war diese Sperre richtig?
+```
+
+Danach fällt der Zusatz automatisch weg (`firstMessageArmedAt` in der Config).
+
+## Rücknahme — drei Wege, alle ohne Codeänderung
+
+| Weg | Wirkung | Dauer |
+|---|---|---|
+| Knopf `↩️ SPERRE AUFHEBEN` in der Meldung | entsperrt in allen Gruppen, setzt dauerhafte Ausnahme, markiert beide Protokolle als `reverted` | ein Klick |
+| `/panic on` | stoppt **alle** automatischen Sperren sofort, ohne Neustart | Sekunden |
+| `FIRST_MESSAGE_AUTO_BAN=false` + `docker compose up -d` | schaltet nur diese Regel ab | ~3 Min. |
+
+`/panic on` ist der Not-Aus: er wirkt zur Laufzeit und deckt Erstnachricht,
+Profilprüfung, Impersonation und Cluster gleichzeitig ab.
+
+## Erinnerung an die .env-Falle
+
+`docker compose restart` lädt die `.env` **nicht** neu — der Container behält
+die Werte aus dem Moment seiner Erzeugung. Nur `docker compose up -d` erzeugt
+ihn neu. Danach immer:
+
+```bash
+docker exec geldhelden-shield-bot printenv FIRST_MESSAGE_AUTO_BAN
+```
+
+Der Service heißt im Compose-File `bot`, nicht `shield-bot`.
