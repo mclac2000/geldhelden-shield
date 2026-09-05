@@ -570,3 +570,150 @@ docker exec geldhelden-shield-bot printenv PROFILE_AUTO_BAN
 Das ist beim Scharfschalten aufgefallen: Der Schalter stand in der Datei auf
 `true`, im laufenden Prozess aber weiter auf `false`. Der Service heißt im
 Compose-File übrigens `bot`, nicht `shield-bot`.
+
+---
+
+# Erstnachrichten-Prüfung (05.09.2026, nachmittags)
+
+Anlass: Marcos Screenshot aus „Geldhelden – Gemeinschaft & Austausch", 17:06.
+Ein Konto „LÓUÎ SÜNG KYC" bewirbt öffentlich den Verkauf verifizierter
+Stripe- und Square-Konten.
+
+## Warum es durchkam — nachgesehen, nicht geraten
+
+| | |
+|---|---|
+| Profilprüfung scharf seit | 05.09. 09:23:49 UTC |
+| Beitritt @Louisung | 05.09. **09:51:48** UTC — 28 Min. danach |
+| Profil abgerufen | ja, `user_profiles.checked_at` gesetzt |
+| Bio | „Trusted & Secure Payment Gateway—Fresh Documents is available here" |
+| `profile_events` | **0 Einträge** |
+
+Kein Systemfehler, sondern die Lücke, die im Abschnitt „Bewusste Lücken" weiter
+oben **am selben Vormittag beschrieben** wurde: die Profilregel greift nur bei
+`t.me`-Links. Diese Bio enthält keinen. Der Text stand sogar wörtlich in der
+Gegenprobe-Liste der Vormittagsmessung (Konto 7929723698) und wurde dort als
+falsch-negativ vermerkt. Sechs Stunden später war er der Angriff.
+
+**Lehre:** eine bewusst gelassene Lücke ist kein Restrisiko, das man notiert und
+liegen lässt. Sie ist eine Verabredung mit dem Angreifer.
+
+## Die Welle
+
+Sechs Konten, fünf davon **innerhalb von 17 Minuten**:
+
+| Konto | Beitritt (UTC) | Bio |
+|---|---|---|
+| @Louisung „LÓUÎ SÜNG KYC" | 09:51 | Trusted & Secure Payment Gateway—Fresh Documents |
+| @Chu_Xuanji_Kyc „CHÜ XÛÅÑJÎ" | 10:00 | Fast & Secure Payment Gateway—Fresh Documents |
+| @ZohngMinyanKyc „ZÔHÑG MÎNYÅÑ" | 10:02 | Trusted & Secure Payment Gateway—Fresh Documents |
+| @YUSI_FENG_KYC_EXPERT | 10:03 | Xpert KYC \| Fresh Docs services |
+| @Zhixin_KYC „ZhìxìnKYC HÜB" | 10:08 | Payment Gateways \| KYC Verified \| Valid Documents |
+| „Halima Yau" (kein Username) | 06:43 | Trusted & Secure Payment Gateway—Fresh Documents |
+
+Vier davon wortgleich. Alle sechs in je 53 Gruppen gesperrt, protokolliert in
+`profile_events` mit Anzeigename und Bio im Wortlaut, rücknehmbar.
+
+## Was Shield bei Nachrichten prüft — Bestandsaufnahme
+
+Nachrichten laufen **nicht** ungeprüft durch. Der Handler ruft der Reihe nach:
+
+1. `serviceCleanup` — Dienstnachrichten
+2. `scamModeration` → `scam.ts`: Punktesystem mit ~60 Phrasenmustern, Schwelle 70
+3. `campaignLinks` — fremde `t.me`-Links als Wellen-Erkennung
+4. `linkPolicy` — Links von Konten in den ersten 30 Minuten
+5. `antiflood`, `moderation` — Frequenz, Blocklisten
+6. `cluster2` — Cluster-Erkennung
+
+Die Lücke war nicht das Fehlen einer Prüfung, sondern **ihr Wortschatz**:
+`scam.ts` kennt Kontosperr-Schwindel, Job-Spam, Airdrops und Gewinnversprechen —
+aber keinen Handel mit Zahlungskonten. Die Nachricht bekam dort 0 Punkte.
+
+## KEIN NACHRICHTENBESTAND — die Auflage war nicht erfüllbar
+
+Marcos Auflage lautete: erst gegen den echten Nachrichtenbestand messen. Das
+ging nicht, und das ist der wichtigste Befund für künftige Sessions:
+
+**Vor dem 05.09.2026 hat Shield an keiner Stelle einen Nachrichtentext
+gespeichert.** Geprüft über alle 43 Tabellen: `scam_events` hält `score`,
+`action` und `reasons_json` — keinen Text. `user_group_activity` hält nur
+Zeitstempel. Es gibt keine Textspalte in irgendeiner Tabelle.
+
+Rückwirkend messbar war deshalb nur, was ohne Nachrichten auskommt:
+die **Namensprüfung**, weil Anzeigenamen vollständig in `baseline_members`
+liegen.
+
+### Messung der Namensprüfung (vollständig, alle 7.196 Konten)
+
+| | |
+|---|---|
+| Konten mit verfremdetem Namen | 49 |
+| davon bereits gesperrte Betrüger | 4 |
+| **übrige** | **45** |
+| davon mit starkem Signal (20 P.) | 4 |
+| davon mit schwachem Signal (8 P.) | 41 |
+
+Die 41 sind lateinisch-kyrillisch gemischte Namen: „Hùng Иванов", „Juan
+Волков", „Kishan Смирнов". Sieht nach Bot-Farm aus, beweisbar ist es nicht —
+deshalb von 20 auf **8 Punkte** gesenkt. Ein Name allein bringt damit nie mehr
+als ein Zehntel des Weges zur Sperre.
+
+Bei den 4 mit starkem Signal fanden sich **zwei echte Mitglieder seit Januar**:
+`🧘🏼‍♀️` und `🧑🏼‍🌾` im Anzeigenamen. Ursache war ein Fehler in
+`identity.ts`: die Hautton-Modifikatoren U+1F3FB–U+1F3FF fehlten in der
+Verbinderklasse der Emoji-Sequenz, dadurch brach die Sequenz nach dem ersten
+Emoji ab und der ZWJ dahinter galt als Verschleierung. **Das betraf auch die
+seit dem Vormittag scharfe Identitätsprüfung.** Behoben, 40 neue Testfälle.
+
+## Aufbau des Punktesystems
+
+Vier Signalgruppen, davon drei **inhaltliche**:
+
+| Gruppe | Beispiele | inhaltlich |
+|---|---|---|
+| Verkauf | „verified accounts", „fresh documents", „KYC verified", Payment Gateway | ja |
+| Werbung | „HEY EVERYONE", „DM me", „your business deserves" | ja |
+| Form | ≥8 Emojis, überwiegend englischer Text | ja |
+| Konto | verfremdeter Name, Nachricht kurz nach Beitritt | **nein** |
+
+Für eine Sperre: **≥70 Punkte UND ≥2 inhaltliche Gruppen.**
+
+Die zweite Bedingung ist der eigentliche Schutz. Im Test stand ein
+Finanz-Botschafter, der sachlich über Zahlungsdienstleister schreibt — er
+sammelt 160 Punkte, alle aus der Verkaufsgruppe. Ohne die Gruppenbedingung wäre
+er gesperrt worden. Mit ihr bekommt er einen Alarm.
+
+Ein verfremdeter Name oder ein früher Zeitpunkt kann eine Sperre **verstärken,
+aber nie tragen** — beides sagt nichts über die Absicht.
+
+### Ein Fehler, der fast durchgegangen wäre
+
+Der erste Entwurf prüfte den Namen wie die Identitätsprüfung: `normalizeIdentityName`
+gegen `normalizePlainName`. Deren Abbildung bildet **`l` auf `i`** ab. Beim
+symmetrischen Vergleich zweier verschiedener Namen ist das richtig; beim
+Vergleich eines Namens **mit sich selbst** schlägt jeder Name mit einem „l" an:
+
+```
+Sarah Klein   → "sarah kiein"  ≠  "sarah klein"   → Treffer
+Martin Schulz → "martin schuiz" ≠ "martin schulz" → Treffer
+Jürgen Müller → "jürgen müiier" ≠ "jürgen müller" → Treffer
+```
+
+Aufgefallen im Gegenbeispiel-Test, nicht in Produktion. Die Gegenbeispiele sind
+der wertvollere Teil der Testsuite.
+
+## Stand
+
+```
+FIRST_MESSAGE_CHECK_ENABLED=true    # bewertet und protokolliert
+FIRST_MESSAGE_AUTO_BAN=false        # sperrt NICHT
+```
+
+`first_message_events` ist die erste Tabelle im System, die Nachrichtentext
+speichert — und zwar nur für Bewertungen ab der Alarmschwelle, nicht für jede
+Nachricht der Gruppe. Damit ist die Kalibrierung, die diesmal unmöglich war,
+beim nächsten Mal möglich.
+
+Ansehen mit `/erstnachricht`. Die Zahlen dort sind
+`COUNT(DISTINCT user_id)` — ein Konto erzeugt bis zu fünf Ereignisse je Gruppe,
+Zeilen zu zählen hätte dieselbe Verzerrung erzeugt wie beim Wochenbericht.
