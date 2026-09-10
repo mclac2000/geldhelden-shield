@@ -13,6 +13,7 @@ import {
   getGroup,
 } from './db';
 import { config, isPanicMode } from './config';
+import { estimateAccountCreatedAt, getConfidenceDays } from './accountAge';
 import { Context } from 'telegraf';
 import { restrictUser, banUser, logAdmin, isUserAdminOrCreatorInGroup } from './telegram';
 import { isAdmin } from './admin';
@@ -26,38 +27,20 @@ export interface AccountMetadata {
 }
 
 /**
- * Approximiert Account-Erstellungsdatum basierend auf Telegram User-ID
- * Telegram User-IDs sind sequenziell und beginnen ca. 2009
+ * Approximiert Account-Erstellungsdatum basierend auf Telegram User-ID.
+ *
+ * Die Umrechnung selbst liegt in src/accountAge.ts - dort steht auch, woher die
+ * Stuetzstellen stammen und wie genau die Schaetzung realistisch sein kann.
+ *
+ * Vorgeschichte (10.09.2026): Die fruehere Rechnung hier ("~100.000 IDs pro Tag
+ * seit 2020") lieferte bei heutigen Kennungen ein Datum weit in der Zukunft, das
+ * auf "heute" gekappt wurde - jedes moderne Konto galt dadurch als 0 Tage alt.
+ * Gemessen an 7.560 Konten: 79,2 % der alten Schaetzungen waren unmoeglich (das
+ * Konto haette nach seiner Erstsichtung angelegt worden sein muessen), im Schnitt
+ * 123 Tage daneben. Nach der Korrektur sind es 0,3 % und 7 Tage.
  */
 function approximateAccountCreatedAt(userId: number): number | null {
-  // Sehr grobe Approximation: IDs unter 10000000 sind alte Accounts (vor 2010)
-  // IDs zwischen 10000000-50000000 ca. 2010-2015
-  // IDs über 50000000 ca. 2015+
-  // IDs über 200000000 ca. 2018+
-  // IDs über 1000000000 ca. 2020+
-  
-  if (userId < 10000000) {
-    // Sehr alte Accounts (vor 2010)
-    return new Date('2009-01-01').getTime();
-  } else if (userId < 50000000) {
-    // Alte Accounts (2010-2015)
-    return new Date('2012-01-01').getTime();
-  } else if (userId < 200000000) {
-    // Mittlere Accounts (2015-2018)
-    return new Date('2016-01-01').getTime();
-  } else if (userId < 1000000000) {
-    // Neuere Accounts (2018-2020)
-    return new Date('2019-01-01').getTime();
-  } else {
-    // Neue Accounts (2020+)
-    // Berechne basierend auf ID: ~100000 IDs pro Tag seit 2020
-    const daysSince2020 = Math.floor((userId - 1000000000) / 100000);
-    const accountDate = new Date('2020-01-01');
-    accountDate.setDate(accountDate.getDate() + daysSince2020);
-    // Clamp auf heutiges Datum
-    const now = Date.now();
-    return Math.min(accountDate.getTime(), now);
-  }
+  return estimateAccountCreatedAt(userId);
 }
 
 /**
@@ -128,21 +111,33 @@ function calculateRiskScoreFactors(user: any, joinsInLastHour: number, includeOn
 
   // Einmalige Faktoren (nur beim ersten Join)
   if (includeOneTimeFactors) {
-    // ACCOUNT_AGE < 7 Tage: +30 Punkte
+    // ACCOUNT_AGE unterhalb der Schwelle: +RISK_ACCOUNT_AGE_BONUS Punkte
+    //
+    // WICHTIG ZUR SCHWELLE: Das Kontoalter wird aus der Nutzerkennung geschaetzt
+    // und ist bestenfalls auf +/- 2-3 Monate genau (siehe src/accountAge.ts).
+    // Eine Schwelle unterhalb von ~90 Tagen ist deshalb nicht entscheidbar - sie
+    // wuerde Rauschen bewerten. Messung vom 10.09.2026 an 4.110 Beitritten:
+    //   juenger als 1 Jahr  -> 41,2 % wurden spaeter auffaellig
+    //   aelter als 5 Jahre  ->  9,1 %
+    //   Grundquote          -> 23,8 %
+    // Das Merkmal trennt also wirklich, taugt aber als Tuersteher allein nicht:
+    // bei einer Schwelle von 1 Jahr waeren 59 % der Getroffenen unbescholten.
+    // Als Risikopunkt neben anderen Faktoren ist es sinnvoll, als Alleinkriterium nicht.
     if (user.account_created_at) {
       const accountAgeDays = (Date.now() - user.account_created_at) / (1000 * 60 * 60 * 24);
       if (accountAgeDays < config.riskAccountAgeThreshold) {
         score += config.riskAccountAgeBonus;
-        reasons.push(`Account-Alter (${accountAgeDays.toFixed(1)}d < ${config.riskAccountAgeThreshold}d): +${config.riskAccountAgeBonus}`);
-      }
-    } else if (user.first_seen) {
-      // Fallback: Verwende first_seen wenn account_created_at nicht verfügbar
-      const accountAgeDays = (Date.now() - user.first_seen) / (1000 * 60 * 60 * 24);
-      if (accountAgeDays < config.riskAccountAgeThreshold) {
-        score += config.riskAccountAgeBonus;
-        reasons.push(`Account-Alter (${accountAgeDays.toFixed(1)}d < ${config.riskAccountAgeThreshold}d, geschätzt): +${config.riskAccountAgeBonus}`);
+        const unschaerfe = getConfidenceDays(user.user_id);
+        const hinweis = unschaerfe ? `, Schaetzung +/- ${Math.round(unschaerfe / 30)} Monate` : '';
+        reasons.push(
+          `Account-Alter (~${Math.round(accountAgeDays)}d < ${config.riskAccountAgeThreshold}d${hinweis}): +${config.riskAccountAgeBonus}`
+        );
       }
     }
+    // Kein first_seen-Fallback mehr: first_seen ist der Zeitpunkt, an dem WIR den
+    // Nutzer zuerst gesehen haben, nicht sein Kontoalter. Bei jedem Neuzugang ist
+    // dieser Wert per Definition ~0 - der Fallback hat also faktisch jeden
+    // Beitretenden als Neukonto bewertet, unabhaengig vom echten Alter.
 
     // NO_USERNAME: +15 Punkte
     if (!user.has_username) {

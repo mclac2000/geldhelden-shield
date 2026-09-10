@@ -56,6 +56,19 @@ export interface Config {
    * gekennzeichnet — dann schaut man genauer hin.
    */
   firstMessageArmedAt: number | null;
+  /**
+   * Zutrittsregel „ohne Benutzernamen kein Zutritt" (src/usernameGate.ts).
+   * Standardmäßig AUS. Die Messung vom 10.09.2026 ergab, dass das Merkmal
+   * Betrüger nicht von normalen Mitgliedern trennt (24,41 % gegen 23,88 %),
+   * dabei aber 55 % aller Neuzugänge abweisen würde. Der Schalter existiert,
+   * damit die Regel bei einer neuen Lage in Sekunden verfügbar ist — nicht,
+   * weil sie sich heute lohnt.
+   */
+  usernameGateEnabled: boolean;
+  /** Nur diese Gruppen sind betroffen. Leer = keine. Kein Versehen möglich. */
+  usernameGateGroups: string[];
+  /** Vor der Ablehnung eine Privatnachricht versuchen (5-Minuten-Fenster). */
+  usernameGateNotify: boolean;
   // Debug
   debugJoins: boolean;
   // Moderation Defaults
@@ -248,10 +261,25 @@ export function loadConfig(): Config {
   const riskMultiJoinBonus = parsePositiveInt(process.env.RISK_MULTI_JOIN_BONUS, 20, 'RISK_MULTI_JOIN_BONUS');
   const riskAccountAgeThreshold = parsePositiveInt(process.env.RISK_ACCOUNT_AGE_THRESHOLD, 7, 'RISK_ACCOUNT_AGE_THRESHOLD');
   // parseBoundedInt statt parsePositiveInt: 0 muss zulässig sein, um den Bonus
-  // abschalten zu können. Die Account-Alter-Heuristik in risk.ts rechnet mit der
-  // User-ID und stuft praktisch jeden heutigen Account als "0 Tage alt" ein —
-  // solange sie nicht kalibriert ist, wäre ein Bonus von 30 ein Massen-Fehlalarm.
+  // abschalten zu können.
+  //
+  // Stand 10.09.2026: Die Alters-Schätzung ist repariert (src/accountAge.ts) und
+  // an 7.560 Konten geprüft — statt 79,2 % unmöglicher Werte sind es jetzt 0,3 %.
+  // Der Bonus steht trotzdem weiter auf 0, weil das Einschalten eine bewusste
+  // Entscheidung über die Schwelle ist und nicht als Nebenwirkung einer
+  // Code-Reparatur passieren soll. Gemessene Trennschärfe beim Beitritt:
+  //   jünger als 1 Jahr → 41,2 % später auffällig | älter als 5 Jahre → 9,1 %
+  //   Grundquote 23,8 %
   const riskAccountAgeBonus = parseBoundedInt(process.env.RISK_ACCOUNT_AGE_BONUS, 30, 0, 1000, 'RISK_ACCOUNT_AGE_BONUS');
+  // Das Kontoalter wird aus der Nutzerkennung geschätzt und ist bestenfalls auf
+  // ±2–3 Monate genau. Eine Schwelle unter ~90 Tagen bewertet damit Rauschen.
+  if (riskAccountAgeBonus > 0 && riskAccountAgeThreshold < 90) {
+    console.warn(
+      `[Config] WARNUNG: RISK_ACCOUNT_AGE_THRESHOLD=${riskAccountAgeThreshold} Tage bei aktivem ` +
+      `Bonus (${riskAccountAgeBonus}). Das Kontoalter ist nur auf ±2–3 Monate schätzbar — ` +
+      `eine Schwelle unter 90 Tagen ist nicht entscheidbar. Empfehlung: 365.`
+    );
+  }
   const riskNoUsername = parsePositiveInt(process.env.RISK_NO_USERNAME, 15, 'RISK_NO_USERNAME');
   const riskNoProfilePhoto = parsePositiveInt(process.env.RISK_NO_PROFILE_PHOTO, 10, 'RISK_NO_PROFILE_PHOTO');
   const riskRestrictThreshold = parsePositiveInt(process.env.RISK_RESTRICT_THRESHOLD, 60, 'RISK_RESTRICT_THRESHOLD');
@@ -323,6 +351,27 @@ export function loadConfig(): Config {
   const armedRaw = (process.env.FIRST_MESSAGE_ARMED_AT || '').trim();
   const armedParsed = armedRaw ? Date.parse(armedRaw) : NaN;
   const firstMessageArmedAt = Number.isFinite(armedParsed) ? armedParsed : null;
+
+  // --- Zutrittsregel Benutzername (Standard: AUS) -------------------------
+  // Begründung für den Standardwert steht in src/usernameGate.ts.
+  const usernameGateEnabled = parseBoolean(process.env.USERNAME_GATE_ENABLED, false);
+  const usernameGateGroups = (process.env.USERNAME_GATE_GROUPS || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  const usernameGateNotify = parseBoolean(process.env.USERNAME_GATE_NOTIFY, true);
+  if (usernameGateEnabled && usernameGateGroups.length === 0) {
+    console.warn(
+      '[Config] USERNAME_GATE_ENABLED=true, aber USERNAME_GATE_GROUPS ist leer. ' +
+      'Die Regel bleibt damit wirkungslos — das ist der sichere Ausgang, aber ' +
+      'vermutlich nicht das, was gemeint war.'
+    );
+  }
+  if (usernameGateEnabled) {
+    console.warn(
+      `[Config] ACHTUNG: Zutrittsregel Benutzername ist AKTIV in ${usernameGateGroups.length} ` +
+      'Gruppe(n). Laut Messung vom 10.09.2026 weist sie ~55 % der Neuzugänge ab, ohne ' +
+      'die Betrugsquote zu senken. Abschalten: USERNAME_GATE_ENABLED=false + Neustart.'
+    );
+  }
 
   const ownLinkExtras = (process.env.OWN_LINK_EXTRAS || 'geldhelden,mclac2000,staatenlos')
     .split(',')
@@ -411,6 +460,9 @@ Mehr Infos: {bio_link}`;
     firstMessageCheckEnabled,
     firstMessageAutoBan,
     firstMessageArmedAt,
+    usernameGateEnabled,
+    usernameGateGroups,
+    usernameGateNotify,
     debugJoins,
     linksLockedDefault,
     forwardLockedDefault,

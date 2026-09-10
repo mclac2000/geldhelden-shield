@@ -647,6 +647,26 @@ bot.on('my_chat_member', async (ctx: Context) => {
   }
 });
 
+// Event: Beitrittsanfrage (chat_join_request)
+//
+// Kommt nur in Gruppen an, die Genehmigungspflicht aktiviert haben. Stand
+// 10.09.2026 sind das 3 von 54 Gruppen, und in diesen dreien gab es in 14 Tagen
+// keinen einzigen Beitritt — der Handler läuft also praktisch nie.
+//
+// Er entscheidet standardmäßig NICHTS: die Anfrage bleibt für die menschlichen
+// Admins offen wie bisher, es wird nur protokolliert, was eine Regel getan hätte.
+// Erst USERNAME_GATE_ENABLED=true zusammen mit USERNAME_GATE_GROUPS schaltet
+// echte Entscheidungen frei. Warum das standardmäßig aus ist, steht in
+// src/usernameGate.ts.
+bot.on('chat_join_request', async (ctx: Context) => {
+  try {
+    const { behandleBeitrittsanfrage } = await import('./usernameGate');
+    await behandleBeitrittsanfrage(ctx);
+  } catch (error: any) {
+    console.error('[Error] Fehler beim Verarbeiten von chat_join_request:', error.message);
+  }
+});
+
 // Event: Neuer User ist einer Gruppe beigetreten (new_chat_members)
 // Auto-Profile-Update bei neuen Mitgliedern (Titel könnte sich geändert haben)
 bot.on('new_chat_members', async (ctx: Context) => {
@@ -2809,7 +2829,10 @@ async function main() {
       // 'edited_message' ergänzt (09/2026): der edited_message-Handler war registriert,
       // bekam aber nie Updates — Scam-Check auf nachträglich bearbeitete Nachrichten
       // griff dadurch nicht.
-      allowedUpdates: ['message', 'edited_message', 'my_chat_member', 'chat_member', 'callback_query', 'channel_post'],
+      // chat_join_request ergänzt am 10.09.2026: ohne diesen Eintrag liefert
+      // Telegram Beitrittsanfragen gar nicht erst aus. Der Bot braucht dafür in
+      // der jeweiligen Gruppe das Adminrecht „Nutzer einladen".
+      allowedUpdates: ['message', 'edited_message', 'my_chat_member', 'chat_member', 'chat_join_request', 'callback_query', 'channel_post'],
     });
     
     // ACHTUNG: Ab hier wird im Long-Polling-Betrieb NICHTS mehr ausgeführt —

@@ -4,6 +4,36 @@ Ein professioneller Telegram Bot zur automatischen Erkennung und Bekämpfung von
 
 ---
 
+## ⚠️ BEVOR JEMAND WIEDER „Konten ohne Benutzernamen aussperren" VORSCHLÄGT
+
+Das wurde am 10.09.2026 gemessen, bevor es gebaut wurde. **Es wirkt nicht.**
+An 4.110 Beitritten mit mindestens 30 Tagen Nachlaufzeit:
+
+| Beitretende | später auffällig |
+|---|---|
+| **ohne** Benutzernamen | **24,41 %** |
+| **mit** Benutzernamen | **23,88 %** |
+
+Kein Unterschied. Bei den von Hand gebannten Konten zeigt das Merkmal sogar
+rückwärts: 6,05 % (ohne) gegen 9,22 % (mit). Gleichzeitig hatten **55,1 %** aller
+Beitritte der letzten 14 Tage keinen Benutzernamen — die Regel hätte jeden zweiten
+Neuzugang abgewiesen, ohne den Betrug zu senken.
+
+Die **Telefonnummer** ist einem Bot grundsätzlich nicht zugänglich (Bot API 10.3) —
+der ursprüngliche Wunsch „Benutzername oder Telefonnummer" ist nicht umsetzbar.
+
+Was stattdessen trennt, ist das **Kontoalter**: unter einem Jahr 41,2 % auffällig,
+über fünf Jahre 9,1 %, bei einer Grundquote von 23,8 %. Die Schätzung dafür war
+bis zum 10.09.2026 defekt und ist jetzt repariert.
+
+➡️ **Vollständige Messung, Grenzen und Schaltanleitung:
+[`docs/MESSUNG-ZUTRITTSREGELN-2026-09-10.md`](docs/MESSUNG-ZUTRITTSREGELN-2026-09-10.md)**
+
+Die Regel ist fertig gebaut und steht auf `USERNAME_GATE_ENABLED=false`.
+Sie ist in Sekunden verfügbar, falls sich die Lage ändert — bitte vorher neu messen.
+
+---
+
 ## ⚠️ VOR JEDER ÄNDERUNG AN `index.ts` LESEN
 
 ### Alles, was hinter `await bot.launch()` steht, läuft nicht.
