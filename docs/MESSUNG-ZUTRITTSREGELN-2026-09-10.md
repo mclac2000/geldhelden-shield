@@ -169,6 +169,56 @@ deshalb unmöglich.
 
 ---
 
+## Genehmigungspflicht: was ein Bot kann und was nicht
+
+**Ein Bot kann die Genehmigungspflicht nicht einschalten.** Es gibt im Bot API keine
+Methode dafür — `join_by_request` ist dort ausschließlich *lesbar* (über `getChat`).
+Geschrieben wird die Einstellung nur über die Nutzer-Schnittstelle, also **von einem
+Menschen in der Telegram-App**. Alle acht `setChat*`-Methoden der Bot-API
+(`setChatTitle`, `setChatDescription`, `setChatPhoto`, `setChatPermissions`,
+`setChatStickerSet`, `setChatAdministratorCustomTitle`, `setChatMemberTag`,
+`setChatMenuButton`) können es nicht.
+
+**Und der Schalter bedeutet je nach Gruppentyp etwas anderes** — das ist die Falle:
+
+| Gruppentyp | „Neue Mitglieder bestätigen" bedeutet |
+|---|---|
+| **privat** (nur Einladungslink) | Admin genehmigt jeden, der **beitreten** will → echte Tür |
+| **öffentlich** (@Benutzername) | Admin genehmigt jeden, der **schreiben** will → kein Zutrittsschutz |
+
+Stand 10.09.2026, direkt abgefragt:
+
+| Gruppe | öffentlich? | Genehmigung | Bot-Rechte |
+|---|---|---|---|
+| Meetup Wolfsburg | **nein (privat)** | nein | einladen ✓, sperren ✓ |
+| Meetup Osnabrück | nein (privat) | nein | einladen ✓, sperren ✓ |
+| Meetup Portugal/Algarve | nein (privat) | nein | einladen ✓, sperren ✓ |
+| MeetUp Berlin | **JA (@ghberlin)** | JA | einladen ✓, sperren ✓ |
+
+**Berlin ist öffentlich.** Die dort aktive Genehmigungspflicht ist also die
+Schreib-Variante, keine Tür vor dem Beitritt. Von den drei „Genehmigungsgruppen"
+ist damit mindestens eine keine echte Zutrittskontrolle.
+
+Prüfen lässt sich das jederzeit:
+
+```bash
+python3 scripts/check-group-gate.py            # Standardgruppen
+python3 scripts/check-group-gate.py -100123…   # beliebige Gruppen
+```
+
+Zwei weitere Punkte aus der Doku, die man vorher wissen sollte:
+
+- Der Bot bekommt Beitrittsanfragen **nur** mit dem Adminrecht „Nutzer einladen"
+  (`can_invite_users`) — und nur, wenn `chat_join_request` in `allowed_updates`
+  steht. Beides ist erfüllt.
+- Es gibt zwei getrennte Ebenen: ein **einzelner Einladungslink** kann per
+  `createChatInviteLink(creates_join_request=true)` genehmigungspflichtig gemacht
+  werden — das **kann** der Bot selbst. Das wirkt aber nur für diesen einen Link;
+  wer die Gruppe anders findet, geht daran vorbei. Die gruppenweite Einstellung
+  kann nur ein Mensch setzen.
+
+---
+
 ## Datenschwächen, die beim Messen gefunden wurden
 
 Zwei davon hätten die Zahlen fast verfälscht:
@@ -182,10 +232,22 @@ Zwei davon hätten die Zahlen fast verfälscht:
    ein Import, kein Zulauf. Aus allen Messungen ausgeschlossen.
 3. **Die Spalten `users.username`, `first_name`, `last_name` sind bei allen 7.587
    Konten leer.** Tote Spalten; nur die Ja/Nein-Kennzeichen werden gepflegt.
-4. **27 Einträge in `users` haben negative Kennungen** (Kanal- oder anonyme
-   Beiträge) und einer ist eine reservierte Telegram-Dienstkennung. Das sind keine
-   Nutzer. `src/accountAge.ts` schließt sie aus; für Messungen gehören sie
-   ebenfalls herausgefiltert.
+4. **27 Einträge in `users` haben negative Kennungen, einer ist eine reservierte
+   Telegram-Dienstkennung.** Das sind keine Menschen: negative Kennungen entstehen
+   durch Beiträge im Namen eines Kanals oder durch anonyme Admins, `777000` ist
+   Telegrams eigener Dienstabsender für Anmeldecodes.
+
+   **Jede Messung, die sie nicht herausfiltert, ist verzerrt** — sie zählt
+   Kanalbeiträge wie Mitglieder. `src/accountAge.ts` liefert für sie bewusst
+   `null`. In SQL gehört in jede Auswertung:
+
+   ```sql
+   WHERE user_id > 0
+     AND user_id NOT IN (777000, 42777, 136817688, 1087968824, 1271266957, 5434988373)
+   ```
+
+   Die Liste stammt aus `core.telegram.org/api/peers` (Service Notifications,
+   Telegram Support, Channel_Bot, GroupAnonymousBot, Replies Bot, Anti-Spam Bot).
 5. Das Kennzeichen spiegelt den **heutigen** Zustand, nicht den zum
    Beitrittszeitpunkt. Wer später einen Benutzernamen angelegt hat, zählt als
    „mit". Das schönt das Ergebnis **zugunsten** der Regel — und selbst so zeigt sie
@@ -196,15 +258,27 @@ Zwei davon hätten die Zahlen fast verfälscht:
 ## Wie man die Regel ein- und ausschaltet
 
 ```bash
-# Einschalten (nur nach einer neuen Messung!)
+# In der .env auf dem Server:
 USERNAME_GATE_ENABLED=true
-USERNAME_GATE_GROUPS=-1002504808604      # nur diese Gruppen, kommagetrennt
+USERNAME_GATE_GROUPS=-1003365870767      # nur diese Gruppen, kommagetrennt
 USERNAME_GATE_NOTIFY=true
 
-# Ausschalten — wirkt nach einem Neustart des Containers, ohne Deploy:
-USERNAME_GATE_ENABLED=false
-docker compose restart geldhelden-shield-bot
+# ⚠️ WICHTIG — und am 10.09.2026 auf die harte Tour gelernt:
+# "docker compose restart" liest die .env NICHT neu ein. Der Container
+# startet dann mit den ALTEN Werten weiter, und man merkt es nicht.
+# Genau das ist beim Scharfschalten des Alters-Bonus passiert: .env sagte 15,
+# der laufende Bot rechnete weiter mit 0.
+#
+# Der Container muss NEU ERZEUGT werden:
+cd "/root/Geldhelden Shield" && docker compose up -d
+
+# Danach immer nachsehen, ob es auch angekommen ist:
+docker exec geldhelden-shield-bot printenv | grep -E "USERNAME_GATE|RISK_ACCOUNT_AGE"
 ```
+
+**Not-Aus:** `USERNAME_GATE_ENABLED=false` in die `.env`, dann `docker compose up -d`.
+Kein Deploy, kein Build, dauert Sekunden. Die Prüfung darüber gehört dazu — eine
+Abschaltung, die man nicht nachgesehen hat, ist keine Abschaltung.
 
 Ohne `USERNAME_GATE_GROUPS` bleibt die Regel wirkungslos, auch wenn sie
 eingeschaltet ist. Das ist Absicht: ein Versehen darf nicht 54 Gruppen treffen.

@@ -48,7 +48,7 @@ Aufwand: 15 Minuten. Das ist unabhängig vom Impersonation-Thema und sollte zuer
 | | |
 |---|---|
 | **Code** | `~/development/geldhelden-shield/` (TypeScript, ~19.850 Zeilen in `src/`) |
-| **Server** | APS-Server `77.42.42.65`, SSH-Alias `freihelden-crm` (in `CLAUDE.md` als `geldhelden-aps` geführt — der Alias existiert im Terminal-MCP nicht, das ist zu korrigieren) |
+| **Server** | APS-Server `77.42.42.65`, SSH-Alias **`geldhelden-aps`**, Schlüssel `~/.ssh/id_ed25519_geldhelden_deploy` (korrigiert am 10.09.2026: der alte Alias `freihelden-crm` zeigte auf `~/.ssh/id_ed25519`, den der Server nicht mehr akzeptiert — er ist entfernt) |
 | **Laufzeit** | Docker-Container `geldhelden-shield-bot`, läuft seit 01.06.2026 |
 | **Verzeichnis** | `/root/Geldhelden Shield/` |
 | **Datenbank** | SQLite, `/root/Geldhelden Shield/data/shield.db`, **143 MB** |
