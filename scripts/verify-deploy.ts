@@ -21,11 +21,20 @@ function pruefe(bedingung: boolean, text: string): void {
   console.log('  ' + (bedingung ? 'OK  ' : 'FEHLER  ') + text);
 }
 
-console.log('=== 1. Zutrittsregel: Zustand ===');
+console.log('=== 1. Zutrittsregel und Risiko-Schalter ===');
 console.log('  ' + gateStatus());
-pruefe(config.usernameGateEnabled === false, 'USERNAME_GATE_ENABLED ist false');
+pruefe(config.usernameGateEnabled === false, 'USERNAME_GATE_ENABLED ist false (Regel wirkt nicht)');
 pruefe(config.usernameGateGroups.length === 0, 'USERNAME_GATE_GROUPS ist leer');
-pruefe(config.riskAccountAgeBonus === 0, 'RISK_ACCOUNT_AGE_BONUS ist 0 (Live-Verhalten unveraendert)');
+
+// Seit 10.09.2026 bewusst scharf: Schwelle 365 Tage, Bonus 15.
+// Die Schwelle MUSS mindestens 90 betragen - darunter ist die Alters-Schaetzung
+// nicht entscheidbar (+/- 2-3 Monate), die Regel wuerde Rauschen bewerten.
+pruefe(config.riskAccountAgeBonus === 15,
+  'RISK_ACCOUNT_AGE_BONUS ist 15 (gelesen: ' + config.riskAccountAgeBonus + ')');
+pruefe(config.riskAccountAgeThreshold === 365,
+  'RISK_ACCOUNT_AGE_THRESHOLD ist 365 Tage (gelesen: ' + config.riskAccountAgeThreshold + ')');
+pruefe(config.riskAccountAgeBonus === 0 || config.riskAccountAgeThreshold >= 90,
+  'Schwelle ist grob genug fuer die Genauigkeit der Schaetzung (>= 90 Tage)');
 
 console.log('');
 console.log('=== 2. Kontoalter: Stichproben ===');
