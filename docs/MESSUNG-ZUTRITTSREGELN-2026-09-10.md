@@ -9,6 +9,15 @@ angeschrieben wurden.
 
 ---
 
+> **NACHTRAG 11.09.2026 — die Zielgröße war tatsächlich unsauber.**
+> Zwei aus der Community gemeldete Betrugsprofile haben die Frage ausgelöst, ob
+> „später auffällig" Betrug misst oder nur Entdeckung. Es maß beides gemischt,
+> und die beiden Teile zeigen in **entgegengesetzte** Richtungen. Die Zahl
+> 24,41 % gegen 23,88 % ist dadurch entstanden, dass sie sich gegenseitig
+> aufheben. Die korrigierte Auswertung steht unten unter
+> „Nachtrag: getrennte Zielgrößen" — sie ändert die Empfehlung **nicht**,
+> aber sie ändert die Begründung. Bitte beides lesen.
+
 ## Das Ergebnis in zwei Zahlen
 
 Grundlage: 4.110 Beitritte, die mindestens 30 Tage zurückliegen (damit eine spätere
@@ -297,9 +306,150 @@ FROM username_gate_log GROUP BY tag, entscheidung ORDER BY tag DESC;
 
 ---
 
+## Nachtrag 11.09.2026: getrennte Zielgrößen
+
+Anlass: Marco hat zwei Betrugsprofile aus der Community gemeldet. Beide ohne
+Benutzernamen, beide mit Telegram-Premium, beide mit Profilbild und vollem
+Namen. Eines saß in „Geldhelden Meetup München". Der Einwand dahinter: Wenn
+„auffällig" in Wahrheit „von uns entdeckt" heißt, misst die Auswertung nicht das
+Risiko, sondern die eigene Sehkraft.
+
+**Der Einwand war berechtigt.**
+
+### Der Bot und die Menschen finden fast völlig verschiedene Leute
+
+| | Anzahl |
+|---|---|
+| gebannte Konten insgesamt | 477 |
+| davon durch **Menschen** gebannt (Cross-Ban aus einer Gruppe) | **441 (92,5 %)** |
+| durch Cluster-Erkennung | 8 (1,7 %) |
+| sonstige Gründe | 28 (5,9 %) |
+
+Von den **441 durch Menschen gebannten** Konten hatte der Bot vorher nur **38
+inhaltlich erkannt (8,6 %)**.
+
+> **In 91,4 % der von Menschen gemeldeten Fälle war der Bot blind.**
+
+Umgekehrt: Der Bot hat 886 Konten inhaltlich erkannt, davon wurden nur 42
+(4,7 %) gebannt.
+
+Der Grund ist strukturell: Der Bot erkennt Inhalte **in Gruppen** (`unapproved_url`,
+`telegram_invite_link`). Wer Mitglieder **privat anschreibt**, hinterlässt in der
+Gruppe nichts. Diesen Typ kann der Bot prinzipiell nicht sehen — nur ein Mensch
+meldet ihn. Es sind zwei fast disjunkte Populationen.
+
+### Getrennt gezählt zeigen die beiden Zielgrößen in verschiedene Richtungen
+
+Grundgesamtheit wie oben (n = 4.112, mindestens 30 Tage Nachlaufzeit):
+
+| Beitretende | n | **von Menschen gebannt** | **vom Bot erkannt** |
+|---|---|---|---|
+| ohne Benutzernamen | 2.397 | **5,84 %** | **16,94 %** |
+| mit Benutzernamen | 1.715 | **7,93 %** | **13,18 %** |
+
+Der Bot markiert Konten **ohne** Benutzernamen häufiger, Menschen bannen Konten
+**mit** Benutzernamen häufiger. In der Summe heben sich beide auf — daher die
+scheinbare Nulldifferenz von 24,41 % gegen 23,88 %. **Die alte Zahl war kein
+Signal, sondern eine Auslöschung.**
+
+### Beide Merkmale kombiniert
+
+| Benutzername | Kontoalter | n | von Menschen gebannt | vom Bot erkannt |
+|---|---|---|---|---|
+| mit | älter 1 Jahr | 1.318 | 6,53 % | 9,26 % |
+| **mit** | **jünger 1 Jahr** | 397 | **12,59 %** | 26,20 % |
+| ohne | älter 1 Jahr | 1.492 | **4,56 %** | 7,77 % |
+| ohne | jünger 1 Jahr | 905 | 7,96 % | **32,04 %** |
+
+Grundquoten: 6,71 % von Menschen gebannt, 15,37 % vom Bot erkannt.
+
+**Für die Frage „wer schreibt unsere Mitglieder an?" ist die riskanteste Gruppe
+nicht die ohne Benutzernamen, sondern die MIT Benutzernamen und jungem Konto
+(12,59 %).** Die vermutete Kombination „kein Benutzername **und** jung" liegt bei
+7,96 % — das 1,19-fache der Grundquote, also praktisch die Grundquote.
+
+Das **Kontoalter** ist in beiden Zielgrößen der stärkere Faktor. Der Benutzername
+zeigt innerhalb **jeder** Altersschicht in dieselbe (für die Regel falsche)
+Richtung — der Effekt ist also nicht durch das Alter erklärt.
+
+### Der Einwand gegen diese Zahlen, den man kennen muss
+
+**Meldeverzerrung.** Ein Mitglied, das einen Betrüger melden will, tut sich mit
+einem `@namen` leichter. Es ist denkbar, dass Konten **mit** Benutzernamen
+häufiger gebannt werden, weil sie leichter zu melden sind — nicht, weil sie
+häufiger betrügen. Das lässt sich mit unseren Daten **nicht** prüfen.
+
+Dagegen spricht: Marcos beide gemeldeten Profile haben **keinen** Benutzernamen
+und wurden trotzdem gemeldet. Melden ohne Benutzernamen funktioniert also.
+
+Was man daraus **nicht** schließen darf: dass die Regel doch wirkt. Zwei
+Beispiele belegen die Frage, nicht die Antwort.
+
+---
+
+## Nachtrag 11.09.2026: der eigentliche Fund ist ein blinder Fleck
+
+Das gemeldete Profil saß in **„Geldhelden Meetup München"** — einer Gruppe mit
+`status = 'disabled'`. Dort greift **keine** Regel.
+
+| | |
+|---|---|
+| Gruppe angelegt | 10.01.2026 |
+| erfasste Beitritte | 115 (Jan 55, Feb 49, Mär 11) |
+| letzter Beitritt | 16.03.2026 |
+| letzte Aktivität | 10.04.2026 |
+| Bot erreichbar? | **nein** — Telegram: „chat not found" |
+| Nachfolgegruppe verwaltet? | **keine** |
+
+**Der Bot hat die München-Gruppe im Frühjahr 2026 verloren, und es ist ein halbes
+Jahr lang niemandem aufgefallen.** Das ist keine Messfrage — das ist eine Lücke
+im Schutz.
+
+Zwei weitere Gruppen, in denen der Bot **noch Mitglied ist**, aber alle Regeln
+abgeschaltet sind:
+
+| Gruppe | Mitglieder laut Telegram |
+|---|---|
+| Geldhelden – Freiheit durch Wissen | 50 |
+| Brückentage Butzbach | 17 |
+
+Und eine Dublette: **„Neue Freie Welt"** existiert zweimal — die verwaltete Fassung
+hat 33 erfasste Mitglieder, die stillgelegte 534.
+
+Prüfen lässt sich das jederzeit mit `scripts/pruefe-abdeckung.py`.
+
+---
+
+## Nachtrag 11.09.2026: was wir über die zwei Profile NICHT sagen können
+
+**Die beiden gemeldeten Konten sind in unseren Daten nicht auffindbar.** Nicht,
+weil sie fehlen, sondern weil das System **keine Namen speichert**:
+
+- `users.username`, `users.first_name`, `users.last_name`: bei **allen 7.590**
+  Konten leer.
+- `user_name_history` hat insgesamt 37 Zeilen.
+
+Eine Suche nach einem Anzeigenamen ist damit strukturell unmöglich. Wenn jemand
+ein Bildschirmfoto schickt, können wir das Konto nicht zuordnen — es sei denn,
+die Kennung steht dabei.
+
+**Telegram-Premium wird nicht gespeichert.** Beide gemeldeten Profile haben
+Premium. Im Code existiert `isPremium` nur als flüchtige Eingabe der
+Betrugsbewertung (`src/scam.ts`), es landet nirgends in der Datenbank. Ob Premium
+trennt, ist deshalb **rückwirkend nicht messbar** — und das wäre bei zwei von zwei
+Fällen eine naheliegende Frage.
+
+---
+
 ## Messungen wiederholen
 
 ```bash
+# Zielgrößen getrennt: Mensch gegen Bot, Merkmale kombiniert (11.09.2026)
+python3 scripts/pruefe-zielgroesse.py
+
+# Abdeckung: welche Gruppen sieht der Bot nicht mehr? (dauert ~1 Minute)
+python3 scripts/pruefe-abdeckung.py
+
 # Kontoalter: alte gegen neue Schätzung, Trennschärfe, Schwellenwirkung
 docker exec -e SHIELD_DB=/data/shield.db geldhelden-shield-bot \
   npx tsx scripts/measure-account-age.ts

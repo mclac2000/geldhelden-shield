@@ -19,6 +19,15 @@ rückwärts: 6,05 % (ohne) gegen 9,22 % (mit). Gleichzeitig hatten **55,1 %** al
 Beitritte der letzten 14 Tage keinen Benutzernamen — die Regel hätte jeden zweiten
 Neuzugang abgewiesen, ohne den Betrug zu senken.
 
+**Nachtrag 11.09.2026:** Die Zielgröße wurde nachgeprüft und war unsauber — sie
+mischte „vom Bot erkannt" mit „von Menschen gemeldet", und beide zeigen in
+**entgegengesetzte** Richtungen (ohne Benutzernamen: 16,94 % Bot / 5,84 % Mensch;
+mit: 13,18 % / 7,93 %). Getrennt gezählt bleibt es dabei, dass die Regel nicht
+trägt. Wichtiger ist ein anderer Fund: **in 91,4 % der von Menschen gemeldeten
+Fälle hatte der Bot nichts erkannt** — er sieht Inhalte in Gruppen, nicht private
+Nachrichten. Und die München-Gruppe war seit Frühjahr 2026 unbemerkt aus der
+Verwaltung gefallen.
+
 Die **Telefonnummer** ist einem Bot grundsätzlich nicht zugänglich (Bot API 10.3) —
 der ursprüngliche Wunsch „Benutzername oder Telefonnummer" ist nicht umsetzbar.
 
