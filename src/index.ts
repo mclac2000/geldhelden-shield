@@ -672,9 +672,15 @@ bot.on('chat_join_request', async (ctx: Context) => {
 bot.on('new_chat_members', async (ctx: Context) => {
   try {
     if (!ctx.message || !('new_chat_members' in ctx.message)) return;
-    
+
     const chat = ctx.chat;
     if (!chat || (chat.type !== 'group' && chat.type !== 'supergroup')) return;
+
+    // Identität jedes Neuzugangs mitschreiben (siehe src/identitaet.ts).
+    try {
+      const { merkeAusFrom } = await import('./identitaet');
+      for (const m of ctx.message.new_chat_members) merkeAusFrom(m);
+    } catch { /* darf den Beitritt nicht aufhalten */ }
 
     const newMembers = ctx.message.new_chat_members;
 
@@ -1851,6 +1857,16 @@ bot.on('message', async (ctx: Context, next) => {
         console.error('[Identity][MESSAGE] Fehler:', identityError instanceof Error ? identityError.message : String(identityError));
       }
     }
+
+    // Identität mitschreiben — Benutzername, Vor-/Nachname, Premium.
+    // Muss GANZ AM ANFANG stehen: auch wenn die Nachricht gleich gelöscht wird,
+    // wollen wir wissen, wer sie geschrieben hat. Am 11.09.2026 liessen sich
+    // zwei gemeldete Betrugsprofile nicht zuordnen, weil nie ein Name
+    // gespeichert wurde. Schlägt nie fehl, hält nie auf.
+    try {
+      const { merkeAusFrom } = await import('./identitaet');
+      merkeAusFrom(ctx.from);
+    } catch { /* Mitschreiben darf den Nachrichtenweg nicht anhalten */ }
 
     // Service-Message-Cleanup (Prompt F) - ZUERST, aber nach interner Verarbeitung
     const { cleanupServiceMessages } = await import('./serviceCleanup');
