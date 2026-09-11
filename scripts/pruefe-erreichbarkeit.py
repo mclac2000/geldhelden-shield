@@ -79,11 +79,11 @@ def melde(text):
 
 
 def pruefe():
-    """Liefert (in_ordnung, probleme, geprueft_gesamt)."""
+    """Liefert (in_ordnung, probleme, verwaltet_gesamt, ungeklaerte)."""
     me = ruf("getMe")
     if not me.get("ok"):
         return False, [("— Bot selbst —", "getMe fehlgeschlagen: %s"
-                        % me.get("description"), 0)], 0
+                        % me.get("description"), 0)], 0, []
     bot_id = me["result"]["id"]
 
     con = sqlite3.connect("file:%s?mode=ro" % DB, uri=True)
@@ -92,18 +92,31 @@ def pruefe():
     # ignorieren. (Spalte kann fehlen, wenn markiere-fremd.py nie lief.)
     spalten = [r[1] for r in con.execute("PRAGMA table_info(groups)").fetchall()]
     fremd_filter = "AND COALESCE(g.fremd, 0) = 0" if "fremd" in spalten else ""
+    hat_ungeklaert = "ungeklaert" in spalten
+    ungeklaert_feld = ("COALESCE(g.ungeklaert, 0), COALESCE(g.ungeklaert_grund, '')"
+                       if hat_ungeklaert else "0, ''")
     gruppen = con.execute("""
         SELECT g.chat_id, g.title, g.status,
-               (SELECT COUNT(*) FROM user_group_activity a WHERE a.group_id = g.chat_id)
+               (SELECT COUNT(*) FROM user_group_activity a WHERE a.group_id = g.chat_id),
+               %s
         FROM groups g WHERE 1=1 %s ORDER BY g.title
-    """ % fremd_filter).fetchall()
+    """ % (ungeklaert_feld, fremd_filter)).fetchall()
     con.close()
 
     probleme = []
+    ungeklaerte = []
     verwaltet = 0
-    for chat_id, titel, status_db, mitglieder in gruppen:
+    for chat_id, titel, status_db, mitglieder, ist_ungeklaert, ungeklaert_grund in gruppen:
         mit = ruf("getChatMember", chat_id=chat_id, user_id=bot_id)
         ist_admin = mit.get("ok") and mit["result"].get("status") == "administrator"
+
+        # Ungeklärte Gruppen erscheinen im Bericht, aber NICHT im täglichen
+        # Alarm. Ein Wächter, der jeden Morgen dieselben unlösbaren Probleme
+        # meldet, wird nach einer Woche nicht mehr gelesen — und dann geht auch
+        # die eine echte Meldung unter.
+        if ist_ungeklaert:
+            ungeklaerte.append((titel or chat_id, ungeklaert_grund or "ohne Grund", mitglieder))
+            continue
 
         if status_db == "managed":
             verwaltet += 1
@@ -131,7 +144,7 @@ def pruefe():
                                  "VERGESSEN: Bot ist Administrator, aber die Gruppe "
                                  "steht auf '%s' — es greift keine Regel" % status_db,
                                  mitglieder))
-    return len(probleme) == 0, probleme, verwaltet
+    return len(probleme) == 0, probleme, verwaltet, ungeklaerte
 
 
 def main():
@@ -144,7 +157,7 @@ def main():
                    help="Einmalig eine Meldung schicken, auch wenn alles in Ordnung ist")
     args = p.parse_args()
 
-    in_ordnung, probleme, gesamt = pruefe()
+    in_ordnung, probleme, gesamt, ungeklaerte = pruefe()
 
     if args.bericht or not args.waechter:
         print("Geprueft: %d verwaltete Gruppen" % gesamt)
@@ -154,6 +167,13 @@ def main():
             print("")
             print("%d Gruppe(n) mit Problem:" % len(probleme))
             for titel, grund, mitglieder in probleme:
+                print("  %-40s %s  (%d erfasste Mitglieder)"
+                      % (titel[:40], grund, mitglieder))
+        if ungeklaerte:
+            print("")
+            print("%d ungeklaerte Gruppe(n) — warten auf eine Entscheidung, "
+                  "kein Alarm:" % len(ungeklaerte))
+            for titel, grund, mitglieder in ungeklaerte:
                 print("  %-40s %s  (%d erfasste Mitglieder)"
                       % (titel[:40], grund, mitglieder))
 

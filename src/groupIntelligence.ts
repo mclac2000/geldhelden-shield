@@ -5,6 +5,7 @@
  */
 
 import { getGroup, ensureGroupExists, updateGroupProfile, getOrCreateGroupProfile, GroupBrand, normalizeBrand } from './db';
+import { normalizeGroupTitle } from './identity';
 
 /**
  * Erkennt Gruppentyp basierend auf Titel
@@ -14,7 +15,12 @@ export function detectGroupBrand(title: string | null): GroupBrand {
     return 'geldhelden'; // Default
   }
   
-  const lowerTitle = title.toLowerCase();
+  // NICHT einfach toLowerCase(): Gruppentitel kommen in mathematischer
+  // Fettschrift, mit kyrillischen Zwillingen oder unsichtbaren Zeichen vor.
+  // "𝐆𝐞𝐥𝐝𝐡𝐞𝐥𝐝𝐞𝐧 𝐆𝐞𝐦𝐞𝐢𝐧𝐬𝐜𝐡𝐚𝐟𝐭 …" ist eine echte Gruppe von uns und wurde von
+  // title.toLowerCase().includes('geldhelden') nicht erkannt (11.09.2026).
+  // Siehe normalizeGroupTitle() in identity.ts.
+  const lowerTitle = normalizeGroupTitle(title);
   const hasStaatenlos = lowerTitle.includes('staatenlos');
   const hasGeldhelden = lowerTitle.includes('geldhelden');
   

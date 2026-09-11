@@ -85,6 +85,47 @@ export function normalizeIdentityName(input: string): string {
 }
 
 /**
+ * Normalisierung eines GRUPPENTITELS für Zeichenketten-Vergleiche.
+ *
+ * WARUM ES DIESE FUNKTION GIBT (11.09.2026)
+ * -----------------------------------------
+ * Unsere zweitgrößte erfasste Gruppe heißt
+ *   „𝐆𝐞𝐥𝐝𝐡𝐞𝐥𝐝𝐞𝐧 𝐆𝐞𝐦𝐞𝐢𝐧𝐬𝐜𝐡𝐚𝐟𝐭 𝐟ü𝐫 𝐅𝐫𝐞𝐢𝐡𝐞𝐢𝐭 …"
+ * — in mathematischer Fettschrift. Für einen Menschen steht dort „Geldhelden",
+ * für `title.includes('geldhelden')` steht dort etwas völlig anderes.
+ *
+ * Eine Prüfung, die zu wenig findet, erzeugt keine Fehlermeldung. Sie schweigt.
+ * Genau deshalb wäre diese Gruppe stillschweigend durch jedes Titelraster
+ * gefallen, und niemand hätte es gemerkt.
+ *
+ * NFKC allein löst den Fettschrift-Fall bereits (die mathematischen Buchstaben
+ * haben eine Kompatibilitätszerlegung nach ASCII). Zusätzlich werden unsichtbare
+ * Zeichen und kyrillische Zwillinge behandelt — „Gеldhelden" mit kyrillischem е
+ * ist derselbe Trick, nur andersherum.
+ *
+ * BEWUSST OHNE die aggressive ASCII-Faltung aus normalizeIdentityName():
+ * o→0, i→l und so weiter sind bei Personennamen sinnvoll, bei Ortsnamen in
+ * Gruppentiteln erzeugen sie Fehltreffer.
+ *
+ * WICHTIG ZUR VERWENDUNG: Der Titel ist ein HINWEIS, keine Entscheidung.
+ * Ob eine Gruppe zu uns gehört, entscheidet sich daran, dass wir sie führen —
+ * nicht daran, wie sie heißt. Wer mit dieser Funktion eine Zugehörigkeit
+ * feststellt statt einen Verdacht, wiederholt den Fehler nur normalisiert.
+ */
+export function normalizeGroupTitle(input: string | null | undefined): string {
+  if (!input) return '';
+  let s = String(input).replace(INVISIBLE_CHARS, '');
+  try {
+    s = s.normalize('NFKC');
+  } catch {
+    /* NFKC nicht verfügbar — unkritisch */
+  }
+  s = s.toLowerCase();
+  s = s.replace(/[Ͱ-ϿЀ-ӿԀ-ԯ]/g, ch => HOMOGLYPHS[ch] ?? ch);
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Harmlose Normalisierung: NUR Kleinschreibung, Unicode-Vereinheitlichung und
  * Leerzeichen. KEINE Homoglyphen, KEINE unsichtbaren Zeichen, KEINE ASCII-Faltung.
  *

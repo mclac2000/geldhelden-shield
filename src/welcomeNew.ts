@@ -17,6 +17,7 @@ import { isGroupManaged } from './groupConfig';
 import { GroupContext } from './domain/groupProjection';
 import { getBotTelegram } from './telegram';
 import { extractLocation } from './groupIntelligence';
+import { normalizeGroupTitle } from './identity';
 
 // K12: Ein einziges, zentrales Welcome-Template (fixe Reihenfolge)
 const CENTRAL_WELCOME_TEMPLATE = `Hey {firstName} 👋
@@ -78,7 +79,12 @@ function determinePartnerType(
   }
   
   // 3. Fallback: Aus Gruppennamen ableiten
-  const title = groupTitle?.toLowerCase() || '';
+  //
+  // NICHT einfach toLowerCase(): sonst bekommt eine Gruppe, deren Titel in
+  // mathematischer Fettschrift geschrieben ist, die falsche Begrüßung — für
+  // einen Menschen steht dort „Geldhelden", für die Zeichenkette nicht.
+  // Gefunden am 11.09.2026 an einer echten Gruppe von uns.
+  const title = normalizeGroupTitle(groupTitle);
   if (title.includes('staatenlos') && title.includes('geldhelden')) return 'coop';
   if (title.includes('staatenlos')) return 'staatenlos';
   
