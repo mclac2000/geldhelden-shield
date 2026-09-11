@@ -16,10 +16,14 @@ Der Grund ist strukturell und nicht durch bessere Regeln zu beheben: **Der Bot
 sieht Inhalte in Gruppen. Die Täter schreiben privat.** Ein Bot bekommt private
 Nachrichten zwischen zwei Menschen nie zu sehen.
 
-> **Solange das so ist, ist jede Türregel Kosmetik.** Die wirksamste Verbesserung
-> wäre, dass Meldungen von Mitgliedern schnell und einfach ankommen — nicht ein
-> weiteres Merkmal an der Tür. (Als nächster Vorschlag notiert, noch nicht gebaut:
-> siehe `docs/MESSUNG-ZUTRITTSREGELN-2026-09-10.md`.)
+> **Solange das so ist, ist jede Türregel Kosmetik.**
+
+**Deshalb gibt es seit dem 11.09.2026 den Meldeweg:** Ein Mitglied leitet dem Bot
+die private Betrugsnachricht weiter — ein Handgriff, kein Formular. Damit sehen
+wir zum ersten Mal, was in privaten Nachrichten passiert.
+Es wird dabei **niemand automatisch gesperrt**: erst Sichtbarkeit, dann Automatik.
+
+➡️ [`docs/MELDEWEG.md`](docs/MELDEWEG.md)
 
 ---
 

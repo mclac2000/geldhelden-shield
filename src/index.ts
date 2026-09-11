@@ -983,6 +983,21 @@ bot.command('panic', async (ctx: Context) => {
 
 // Command: /help oder /menu - Zeigt alle verfuegbaren Befehle
 bot.command(['help', 'menu', 'start'], async (ctx: Context) => {
+  // Ein normales Mitglied, das den Bot im Privatchat startet, darf nicht vor
+  // einer Admin-Hilfe stehen. Es soll genau eine Sache erfahren: dass es hier
+  // eine Betrugsnachricht melden kann. Das ist der einzige Hebel auf die
+  // 91,4 % der Fälle, die der Bot selbst nicht sieht (siehe src/meldeweg.ts).
+  if (ctx.chat?.type === 'private' && ctx.from && !isAdmin(ctx.from.id)) {
+    try {
+      const { MELDEWEG_HILFE } = await import('./meldeweg');
+      await ctx.reply('Hallo! Ich passe auf die Geldhelden-Gruppen auf.\n\n' + MELDEWEG_HILFE);
+    } catch (error: unknown) {
+      console.error('[Meldeweg] /start fehlgeschlagen:',
+        error instanceof Error ? error.message : String(error));
+    }
+    return;
+  }
+
   await handleAdminCommand(ctx, 'help', async (ctx, ...args) => {
     const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
     const parts = text.split(' ').slice(1);
@@ -1855,6 +1870,23 @@ bot.on('message', async (ctx: Context, next) => {
       } catch (identityError: unknown) {
         // Identitätsprüfung darf die Nachrichtenverarbeitung nie blockieren
         console.error('[Identity][MESSAGE] Fehler:', identityError instanceof Error ? identityError.message : String(identityError));
+      }
+    }
+
+    // MELDEWEG — muss VOR allem anderen kommen.
+    //
+    // Ein Mitglied leitet dem Bot eine private Betrugsnachricht weiter. Das ist
+    // der einzige Weg, auf dem wir je erfahren, was in privaten Nachrichten
+    // passiert: In 91,4 % der von Menschen gemeldeten Fälle hatte der Bot selbst
+    // nichts erkannt, weil er nur Gruppeninhalte sieht.
+    // Sperrt bewusst niemanden — siehe src/meldeweg.ts.
+    if (ctx.chat?.type === 'private') {
+      try {
+        const { behandleMeldung } = await import('./meldeweg');
+        if (await behandleMeldung(ctx)) return;
+      } catch (meldeError: unknown) {
+        console.error('[Meldeweg] Fehler im Handler:',
+          meldeError instanceof Error ? meldeError.message : String(meldeError));
       }
     }
 
