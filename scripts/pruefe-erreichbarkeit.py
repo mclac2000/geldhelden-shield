@@ -118,6 +118,11 @@ def pruefe():
     # ignorieren. (Spalte kann fehlen, wenn markiere-fremd.py nie lief.)
     spalten = [r[1] for r in con.execute("PRAGMA table_info(groups)").fetchall()]
     fremd_filter = "AND COALESCE(g.fremd, 0) = 0" if "fremd" in spalten else ""
+    # Aufgeloeste Gruppen existieren nicht mehr oder sind Dubletten. Sie bleiben
+    # als Spur in der Datenbank, aber sie werden nicht mehr geprueft — sonst
+    # meldet der Waechter bis in alle Ewigkeit eine Gruppe, die es nicht gibt.
+    if "aufgeloest" in spalten:
+        fremd_filter += " AND COALESCE(g.aufgeloest, 0) = 0"
     hat_ungeklaert = "ungeklaert" in spalten
     ungeklaert_feld = ("COALESCE(g.ungeklaert, 0), COALESCE(g.ungeklaert_grund, '')"
                        if hat_ungeklaert else "0, ''")

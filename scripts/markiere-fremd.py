@@ -47,6 +47,9 @@ def stelle_spalten_sicher(con):
         ("ungeklaert", "ALTER TABLE groups ADD COLUMN ungeklaert INTEGER NOT NULL DEFAULT 0"),
         ("ungeklaert_grund", "ALTER TABLE groups ADD COLUMN ungeklaert_grund TEXT"),
         ("ungeklaert_seit", "ALTER TABLE groups ADD COLUMN ungeklaert_seit INTEGER"),
+        ("aufgeloest", "ALTER TABLE groups ADD COLUMN aufgeloest INTEGER NOT NULL DEFAULT 0"),
+        ("aufgeloest_grund", "ALTER TABLE groups ADD COLUMN aufgeloest_grund TEXT"),
+        ("aufgeloest_am", "ALTER TABLE groups ADD COLUMN aufgeloest_am INTEGER"),
     ):
         if name not in spalten:
             con.execute(sql)
@@ -60,6 +63,9 @@ def main():
     p.add_argument("--liste", action="store_true")
     p.add_argument("--ungeklaert", metavar="GRUND",
                    help="als ungeklaert kennzeichnen statt als fremd")
+    p.add_argument("--aufgeloest", metavar="GRUND",
+                   help="Gruppe existiert nicht mehr oder ist eine Dublette — "
+                        "endgueltig aus der Bewachung, mit Grund und Datum")
     p.add_argument("--zurueck", action="store_true",
                    help="Kennzeichnung wieder entfernen")
     args = p.parse_args()
@@ -87,14 +93,25 @@ def main():
     print("Sicherung: %s" % sicherung)
 
     wert = 0 if args.zurueck else 1
-    spalte = "ungeklaert" if args.ungeklaert else "fremd"
+    spalte = ("aufgeloest" if args.aufgeloest
+              else "ungeklaert" if args.ungeklaert else "fremd")
 
     for cid in args.chat_ids:
         r = con.execute("SELECT title FROM groups WHERE chat_id = ?", (cid,)).fetchone()
         if not r:
             print("  UNBEKANNT %s" % cid)
             continue
-        if args.ungeklaert and not args.zurueck:
+        if args.aufgeloest and not args.zurueck:
+            # Aufgeloest zieht ungeklaert zurueck: eine Gruppe, die es nicht mehr
+            # gibt, wartet auf keine Entscheidung mehr.
+            con.execute("""UPDATE groups SET aufgeloest = 1, aufgeloest_grund = ?,
+                           aufgeloest_am = ?, ungeklaert = 0, ungeklaert_grund = NULL,
+                           ungeklaert_seit = NULL WHERE chat_id = ?""",
+                        (args.aufgeloest, int(time.time() * 1000), cid))
+        elif args.aufgeloest and args.zurueck:
+            con.execute("""UPDATE groups SET aufgeloest = 0, aufgeloest_grund = NULL,
+                           aufgeloest_am = NULL WHERE chat_id = ?""", (cid,))
+        elif args.ungeklaert and not args.zurueck:
             con.execute("""UPDATE groups SET ungeklaert = 1, ungeklaert_grund = ?,
                            ungeklaert_seit = ? WHERE chat_id = ?""",
                         (args.ungeklaert, int(time.time() * 1000), cid))
@@ -102,10 +119,12 @@ def main():
             con.execute("""UPDATE groups SET ungeklaert = 0, ungeklaert_grund = NULL,
                            ungeklaert_seit = NULL WHERE chat_id = ?""", (cid,))
         else:
-            con.execute("UPDATE groups SET fremd = ? WHERE chat_id = ?", (wert, cid))
+            # Fremd zieht ungeklaert ebenfalls zurueck.
+            con.execute("""UPDATE groups SET fremd = ?, ungeklaert = 0,
+                           ungeklaert_grund = NULL, ungeklaert_seit = NULL
+                           WHERE chat_id = ?""", (wert, cid))
         print("  %s: %s" % (
-            ("nicht mehr " if args.zurueck else "") + ("ungeklaert" if args.ungeklaert else "fremd"),
-            r["title"]))
+            ("nicht mehr " if args.zurueck else "") + spalte, r["title"]))
     con.commit()
 
     # Gegenprobe aus der Datenbank, nicht aus der Absicht
