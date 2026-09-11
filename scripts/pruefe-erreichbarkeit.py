@@ -87,11 +87,16 @@ def pruefe():
     bot_id = me["result"]["id"]
 
     con = sqlite3.connect("file:%s?mode=ro" % DB, uri=True)
+    # Fremde Gruppen bleiben aussen vor. Eine Liste, die sie mitzaehlt, erzeugt
+    # Alarme, die niemand beheben kann — und die deshalb irgendwann alle
+    # ignorieren. (Spalte kann fehlen, wenn markiere-fremd.py nie lief.)
+    spalten = [r[1] for r in con.execute("PRAGMA table_info(groups)").fetchall()]
+    fremd_filter = "AND COALESCE(g.fremd, 0) = 0" if "fremd" in spalten else ""
     gruppen = con.execute("""
         SELECT g.chat_id, g.title, g.status,
                (SELECT COUNT(*) FROM user_group_activity a WHERE a.group_id = g.chat_id)
-        FROM groups g ORDER BY g.title
-    """).fetchall()
+        FROM groups g WHERE 1=1 %s ORDER BY g.title
+    """ % fremd_filter).fetchall()
     con.close()
 
     probleme = []
