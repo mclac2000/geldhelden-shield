@@ -831,3 +831,92 @@ docker exec geldhelden-shield-bot printenv FIRST_MESSAGE_AUTO_BAN
 ```
 
 Der Service heißt im Compose-File `bot`, nicht `shield-bot`.
+
+---
+
+# Sechs Tage scharf: die Zahl (11.09.2026)
+
+**Null Sperren.** Geprüft wurden 163 Nachrichten von 94 Konten seit dem
+05.09. 10:57 UTC. Keine einzige Bewertung erreichte die Alarmschwelle, keine
+Sperre wurde ausgelöst, keine musste zurückgenommen werden.
+
+Der Messweg funktioniert — die Gegenprobe: der Zähler stand beim
+Scharfschalten auf 3 und steht jetzt auf 163, die Schalter im Container
+stehen auf `true`. Die Null ist ein Befund, kein kaputter Befehl.
+
+## Aber die Null allein ist irreführend
+
+In denselben sechs Tagen wurden **40 Konten gesperrt** — fast alle manuell
+durch Menschen. Davon hatten **zehn vorher in einer Gruppe geschrieben**, die
+Regel hat sie also gesehen:
+
+| Konto | Nachrichten | Bewertung durch die Regel |
+|---|---|---|
+| @Aliceperrott „Alice" | 2 | keine |
+| „Juliane Slogar-Sucic" | 1 | keine |
+| „Hasler" | 2 | keine |
+| „Yourrr" | 1 | keine |
+| „Alla" | 1 | keine |
+| @BL_Network „Bruno" | 5 | keine |
+| @MarianMorgan44 | 2 | keine |
+| @sewings_overshroud „Услада · про впн" | 1 | keine |
+| @qVCgoX „Инна vpn life 🥰" | 1 | keine |
+| „Nico Horn" | 1 | keine |
+
+**Zehn Fälle, die Menschen für sperrwürdig hielten, und die Regel hat zu
+keinem einzigen etwas gemeldet.** Zwei davon werben erkennbar für VPN-Dienste
+— ein Wortfeld, das die Regel gar nicht kennt.
+
+## Warum das nicht weiter aufklärbar war — und was daraus folgt
+
+Die Frage „waren diese zehn Nachrichten harmlos, oder ist der Wortschatz zu
+eng?" ließ sich **nicht beantworten**. `first_message_events` speichert nur,
+was die Regel selbst erkannt hat. Damit lässt sich beantworten, was gefunden
+wurde — **niemals, was übersehen wurde**. Die Texte dieser zehn Konten
+existierten nirgends.
+
+Das ist derselbe Fehlertyp wie die Mail-Protokolle in `CLAUDE.md`: Ein Fehlen
+in einem Log ist erst dann ein Befund, wenn erwiesen ist, dass diese Quelle
+die gesuchte Sache überhaupt enthalten *würde*.
+
+**Behoben seit 11.09.2026:** `first_message_samples` hält **jede** bewertete
+Erstnachricht 14 Tage lang, auch die unauffälligen. Wird ein Konto gesperrt —
+von welchem Mechanismus oder Menschen auch immer —, bleiben seine Proben
+dauerhaft (`markSamplesGesperrt` hängt in `banUserGlobally`, also am zentralen
+Sperrweg, nicht an einer einzelnen Regel).
+
+`/erstnachricht verpasst` zeigt dann die Zahl, die zählt: **welche Punktzahl
+hat die Regel den Konten gegeben, die andere gesperrt haben?**
+
+- Liegen sie bei 0–10 Punkten → der **Wortschatz** ist zu eng
+- Liegen sie bei 50–65 Punkten → die **Schwelle** ist zu hoch
+
+Das sind zwei verschiedene Probleme mit zwei verschiedenen Lösungen, und ohne
+diese Zahlen kann man sie nicht unterscheiden. Beim nächsten Mal geht es.
+
+## Einordnung: warum null Sperren der erwartbare Ausgang war
+
+Der Meldeweg (`docs/MELDEWEG.md`) hat die eigentliche Zahl geliefert:
+**in 91,4 % der von Menschen gemeldeten Fälle war der Bot blind**, weil die
+Täter privat schreiben. Die Erstnachrichten-Regel greift ausschließlich in
+Gruppen. Sie deckt damit einen kleinen Ausschnitt ab — den Ausschnitt, in dem
+am 05.09. sechs Konten Zahlungskonten öffentlich zum Kauf anboten.
+
+Dass in diesem Ausschnitt sechs Tage lang nichts passiert ist, heißt nicht,
+dass die Regel nichts taugt. Es heißt, dass diese Masche nach der ersten Welle
+nicht wiedergekommen ist. **Eine Wache, die nichts meldet, ist erst dann ein
+Problem, wenn nachweislich etwas vorbeigekommen ist** — und genau das kann sie
+seit heute selbst nachweisen.
+
+## Die Schnittstelle zum Meldeweg
+
+`scripts/kalibriere-an-meldungen.ts` schickt jede über den Meldeweg
+eingegangene Betrugsnachricht durch `bewerteErstnachricht`. Der Meldeweg ist
+die **einzige Quelle echter, von Menschen bestätigter Betrugstexte** im
+System; die Regel hatte bisher keine.
+
+Wichtig bei der Auswertung, und im Skript ausdrücklich vermerkt: Diese
+Nachrichten kamen **privat**. Eine Masche, die ausschließlich privat läuft,
+gehört in den Meldeweg und **nicht** in den Wortschatz der Erstnachrichten-
+Regel. Jedes zusätzliche Muster, das die Regel nie zu sehen bekommt, ist reines
+Fehlalarmrisiko ohne Nutzen.
