@@ -76,6 +76,17 @@ export async function pruefeErstnachricht(ctx: Context): Promise<ErstnachrichtEr
     });
     const urteil = entscheideErstnachricht(befund);
 
+    // Lernprotokoll: JEDE bewertete Nachricht, auch die unauffällige.
+    // Ohne das lässt sich nur beantworten, was die Regel gefunden hat — nie,
+    // was sie übersehen hat. Siehe Kommentar an der Tabelle in db.ts.
+    const { logFirstMessageSample } = await import('./db');
+    logFirstMessageSample({
+      userId, chatId, username: ctx.from.username ?? null, anzeigename,
+      nachrichtNr: nummer, punkte: befund.punkte,
+      inhaltlicheGruppen: befund.inhaltlicheGruppen,
+      signale: befund.signale, text,
+    });
+
     if (urteil.massnahme === 'keine') return KEINE;
 
     const gruppentitel = 'title' in chat ? chat.title || '' : '';

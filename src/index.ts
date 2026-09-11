@@ -1521,6 +1521,31 @@ bot.command('erstnachricht', async (ctx: Context) => {
     m += `• Nur Alarm: <b>${s.alarmPersonen}</b> Personen (${s.alarmZeilen} Nachrichten)\n`;
     m += `• Tatsächlich gesperrt: <b>${s.durchgesetzt}</b>\n\n`;
 
+    // „verpasst" beantwortet die Frage, die eine Null allein nicht beantwortet:
+    // Welche Punktzahl hat die Regel den Konten gegeben, die andere gesperrt
+    // haben? Bei 0–10 Punkten ist der Wortschatz zu eng, bei 50–65 die
+    // Schwelle zu hoch — zwei verschiedene Probleme.
+    if (arg === 'verpasst') {
+      const { getVerpassteFaelle } = await import('./db');
+      const faelle = getVerpassteFaelle(25);
+      let v = '<b>🔍 Gesperrte Konten, die vorher geschrieben haben</b>\n';
+      v += '<i>Punktzahl = was die Erstnachrichten-Regel ihnen gegeben hat.</i>\n';
+      v += `<i>Sperrschwelle: 70 Punkte und 2 inhaltliche Gruppen.</i>\n\n`;
+      if (faelle.length === 0) {
+        v += 'Noch keine Fälle erfasst. Das Lernprotokoll läuft seit dem 11.09.2026 —\n';
+        v += 'davor wurden unauffällige Nachrichten nirgends gespeichert.';
+      } else {
+        const selbstErkannt = faelle.filter((f: any) => f.hoechstpunkte >= 70 && f.gruppen >= 2).length;
+        v += `${faelle.length} Fälle, davon ${selbstErkannt} von der Regel selbst erkannt.\n\n`;
+        for (const f of faelle.slice(0, 12)) {
+          v += `<b>${f.hoechstpunkte} P.</b> (${f.gruppen} Gr.) <code>${f.user_id}</code> @${f.username || '-'}\n`;
+          v += `   <code>${String(f.texte || '').substring(0, 120).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code>\n`;
+        }
+      }
+      await ctx.reply(v, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+      return;
+    }
+
     const liste = getFirstMessageEvents(arg === 'alarm' ? 'alarm' : arg === 'sperren' ? 'sperren' : null, 10);
     if (liste.length === 0) {
       m += '<i>Noch keine Bewertungen erfasst.</i>';
@@ -1533,7 +1558,7 @@ bot.command('erstnachricht', async (ctx: Context) => {
         m += `   <code>${String(e.text || '').substring(0, 110).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code>\n`;
       }
     }
-    m += '\n<i>/erstnachricht sperren | alarm</i>';
+    m += '\n<i>/erstnachricht sperren | alarm | verpasst</i>';
     await ctx.reply(m, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
   });
 });
@@ -2563,6 +2588,14 @@ console.log(`[Startup] Cluster-Erkennung gestartet (alle ${CLUSTER_DETECTION_INT
 
 // DeletedAccount-AutoRemove: Täglich um 03:00 gelöschte Konten aus allen Gruppen bereinigen
 registerCron('geloeschte-konten', '0 3 * * *', async () => {
+  // Aufbewahrung des Lernprotokolls: unauffällige Proben älter als 14 Tage
+  // fallen weg, Proben gesperrter Konten bleiben.
+  try {
+    const { pruneFirstMessageSamples } = await import('./db');
+    const weg = pruneFirstMessageSamples();
+    if (weg > 0) console.log(`[Erstnachricht] Lernprotokoll bereinigt: ${weg} unauffällige Proben entfernt`);
+  } catch { /* darf den Job nicht stoppen */ }
+
   console.log('[CRON][DeletedAccounts] Starte Bereinigung gelöschter Konten...');
   try {
     const { banUserGlobally } = await import('./telegram');

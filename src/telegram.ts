@@ -1088,6 +1088,15 @@ export async function banUserGlobally(
   // 4. Erstelle User falls nicht vorhanden
   getOrCreateUser(userId);
   updateUserStatus(userId, 'banned');
+
+  // Proben dieses Kontos dauerhaft aufbewahren. Wer gesperrt wird, ist ein
+  // Lehrfall für die Erstnachrichten-Regel — gerade dann, wenn sie ihn selbst
+  // nicht erkannt hat. Ohne diese Zeile verfallen genau die Texte nach 14
+  // Tagen, an denen man die Regel nachschärfen könnte.
+  try {
+    const { markSamplesGesperrt } = await import('./db');
+    markSamplesGesperrt(userId);
+  } catch { /* darf eine Sperre nie aufhalten */ }
   
   // 5. Banne in allen managed Gruppen
   const result = await banUserInAllGroups(userId, reason);

@@ -1082,6 +1082,37 @@ export function initDatabase(): any {
         erster_kontakt INTEGER NOT NULL,
         PRIMARY KEY (user_id, chat_id)
       );
+
+      -- Lernprotokoll: ALLE bewerteten Erstnachrichten, auch die unauffälligen.
+      --
+      -- WARUM DAS NÖTIG IST: first_message_events hält nur, was die Regel
+      -- selbst erkannt hat. Damit lässt sich beantworten „was habe ich
+      -- gefunden?" — aber niemals „was habe ich übersehen?". Am 11.09.2026 war
+      -- genau das die offene Frage: zehn Konten wurden von Menschen gesperrt,
+      -- nachdem sie geschrieben hatten, und die Regel hatte zu keinem eine
+      -- Bewertung erzeugt. Ob ihre Nachrichten harmlos aussahen oder ob der
+      -- Wortschatz der Regel zu eng ist, war nicht mehr feststellbar — die
+      -- Texte existierten nirgends.
+      --
+      -- Aufbewahrung: 14 Tage. Wird ein Konto in dieser Zeit gesperrt, bleibt
+      -- sein Eintrag dauerhaft (gesperrt = 1) — das sind die lehrreichen Fälle.
+      CREATE TABLE IF NOT EXISTS first_message_samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        chat_id TEXT,
+        username TEXT,
+        anzeigename TEXT,
+        nachricht_nr INTEGER NOT NULL,
+        punkte INTEGER NOT NULL,
+        inhaltliche_gruppen INTEGER NOT NULL,
+        signale TEXT,
+        text TEXT,
+        gesperrt INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_fms_user ON first_message_samples(user_id);
+      CREATE INDEX IF NOT EXISTS idx_fms_created ON first_message_samples(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_fms_gesperrt ON first_message_samples(gesperrt);
     `);
   } catch (error: any) {
     if (!error.message.includes('duplicate column name') && !error.message.includes('already exists')) {
@@ -4220,6 +4251,84 @@ export function getFirstMessageEvents(massnahme: string | null = null, limit = 2
  * schreibt. Zeilen zu zählen hätte dieselbe Verzerrung erzeugt wie beim
  * Wochenbericht, wo aus 24 Personen 755 „Banns" wurden.
  */
+/**
+ * Legt eine bewertete Erstnachricht ins Lernprotokoll — unabhängig davon, ob
+ * sie auffällig war. Nur so lässt sich später die Frage beantworten, welche
+ * Punktzahl die Regel den Konten gegeben hat, die andere gesperrt haben.
+ */
+export function logFirstMessageSample(e: {
+  userId: number; chatId: string | null; username: string | null;
+  anzeigename: string; nachrichtNr: number; punkte: number;
+  inhaltlicheGruppen: number; signale: string[]; text: string;
+}): void {
+  try {
+    getDatabase().prepare(`
+      INSERT INTO first_message_samples
+        (created_at, user_id, chat_id, username, anzeigename, nachricht_nr,
+         punkte, inhaltliche_gruppen, signale, text)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      Date.now(), e.userId, e.chatId, e.username, e.anzeigename, e.nachrichtNr,
+      e.punkte, e.inhaltlicheGruppen, JSON.stringify(e.signale),
+      (e.text || '').substring(0, 1000)
+    );
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in logFirstMessageSample:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+/**
+ * Wird bei JEDER Sperre gerufen, egal von welchem Mechanismus oder Menschen.
+ * Markiert die Proben dieses Kontos als dauerhaft aufzubewahren.
+ */
+export function markSamplesGesperrt(userId: number): void {
+  try {
+    getDatabase().prepare(
+      'UPDATE first_message_samples SET gesperrt = 1 WHERE user_id = ?'
+    ).run(userId);
+  } catch { /* nicht kritisch */ }
+}
+
+/** Löscht unauffällige Proben älter als 14 Tage. Gesperrte bleiben. */
+export function pruneFirstMessageSamples(): number {
+  try {
+    const grenze = Date.now() - 14 * 24 * 3600 * 1000;
+    const r = getDatabase().prepare(
+      'DELETE FROM first_message_samples WHERE gesperrt = 0 AND created_at < ?'
+    ).run(grenze);
+    return r.changes ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Die Auswertung, die „null Sperren" erst deutbar macht: Welche Punktzahl hat
+ * die Regel den Konten gegeben, die später gesperrt wurden?
+ *
+ * Liegen die alle bei 0–10 Punkten, ist der Wortschatz der Regel zu eng.
+ * Liegen sie knapp unter 70, ist die Schwelle zu hoch. Das eine ist ein
+ * anderes Problem als das andere, und ohne diese Zahlen kann man es nicht
+ * unterscheiden.
+ */
+export function getVerpassteFaelle(limit = 40): any[] {
+  try {
+    return getDatabase().prepare(`
+      SELECT user_id, username, anzeigename, MAX(punkte) AS hoechstpunkte,
+             MAX(inhaltliche_gruppen) AS gruppen, COUNT(*) AS nachrichten,
+             MIN(created_at) AS erste,
+             GROUP_CONCAT(substr(text, 1, 100), ' ||| ') AS texte
+      FROM first_message_samples
+      WHERE gesperrt = 1
+      GROUP BY user_id
+      ORDER BY hoechstpunkte DESC, erste DESC
+      LIMIT ?
+    `).all(limit);
+  } catch {
+    return [];
+  }
+}
+
 export function getFirstMessageStats(seit: number): {
   sperrenPersonen: number; alarmPersonen: number;
   sperrenZeilen: number; alarmZeilen: number; durchgesetzt: number;
