@@ -441,6 +441,49 @@ Fällen eine naheliegende Frage.
 
 ---
 
+## Die Lehre aus dieser Woche
+
+**Eine Nulldifferenz kann eine Auslöschung sein.** Die 24,41 % gegen 23,88 % sahen
+aus wie „das Merkmal sagt nichts". In Wahrheit waren es zwei gegenläufige
+Effekte, die sich gegenseitig aufgehoben haben: der Bot markiert Konten *ohne*
+Benutzernamen häufiger (16,94 % zu 13,18 %), Menschen bannen Konten *mit*
+Benutzernamen häufiger (7,93 % zu 5,84 %). Wer nur die Summe misst, sieht eine
+Null und hält sie für ein Ergebnis.
+
+**Bevor man zwei Gruppen vergleicht, muss man wissen, was die Zielgröße misst.**
+„Auffällig geworden" hieß hier in Wahrheit „von uns entdeckt" — und unsere
+Entdeckung hat eine eigene, starke Schlagseite. Ein Vergleich zweier Gruppen
+anhand einer solchen Zahl vergleicht zwei Blindheiten.
+
+**Und der eigentliche Fehler lag nicht in der Messung, sondern daneben:** Während
+über eine Zutrittsregel für bewachte Räume diskutiert wurde, stand ein
+unbewachter Raum daneben, den niemand vermisst hatte.
+
+---
+
+## Nächster Vorschlag — notiert, nicht gebaut
+
+Aus den 91,4 % folgt, woran als Nächstes zu arbeiten wäre: **nicht an der Tür,
+sondern am Meldeweg.**
+
+Wenn Menschen 92,5 % aller Bans auslösen und der Bot dabei fast nie mitbekommt,
+worum es geht, dann ist der Engpass die Meldung selbst — wie schnell und wie
+mühelos ein Mitglied sagen kann „dieser Mensch hat mich angeschrieben".
+
+Denkbare Richtung (nicht ausgearbeitet, nicht entschieden):
+
+- Ein einfacher Meldeweg direkt aus Telegram heraus, der die Kennung des
+  gemeldeten Kontos mitliefert — damit endet auch das Problem, dass
+  Bildschirmfotos keinem Konto zuzuordnen sind.
+- Eine Meldung erreicht sofort alle Admins, nicht nur den einen, der gerade liest.
+- Was gemeldet wurde, landet als Datensatz — dann ist in drei Monaten messbar,
+  was die Täter tatsächlich tun, statt nur, was der Bot davon sieht.
+
+Das ist der Punkt mit dem größten Hebel. Er ist ausdrücklich **noch nicht**
+angefangen.
+
+---
+
 ## Messungen wiederholen
 
 ```bash

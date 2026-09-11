@@ -108,6 +108,52 @@ Notizen.
 
 ---
 
+## Der Wächter gegen verlorene Gruppen
+
+Eingerichtet am 11.09.2026, nachdem aufgefallen war, dass der Bot die Gruppe
+„Geldhelden Meetup München" im Frühjahr verloren hatte — **ein halbes Jahr lang
+unbemerkt**. Genau dort saß ein gemeldetes Betrugsprofil.
+
+```bash
+# Täglich 07:15 per Cron, meldet nur bei einem Problem nach Telegram:
+/etc/cron.d/shield-waechter
+
+# Von Hand, vollständiger Bericht (dauert ~3 Minuten, 63 API-Abfragen):
+cd "/root/Geldhelden Shield" && python3 scripts/pruefe-erreichbarkeit.py --bericht
+
+# Einmalig eine Meldung erzwingen, auch wenn alles in Ordnung ist:
+python3 scripts/pruefe-erreichbarkeit.py --waechter --testmeldung
+```
+
+Er läuft **bewusst außerhalb des Bot-Containers**. Ein Wächter im selben Prozess
+wie das Bewachte fällt mit ihm zusammen aus.
+
+Er prüft **beide** Richtungen:
+
+- `managed`, aber nicht erreichbar / kein Administrator / ohne Sperrrecht
+- `disabled`, aber der Bot **ist** dort Administrator → vergessen, es greift
+  keine Regel
+
+Beim allerersten Lauf hat er sofort etwas gefunden, das von Hand übersehen
+worden war: In der verwalteten Gruppe „Neue Freie Welt" ist der Bot zwar
+Administrator, aber **ohne das Recht „Nutzer sperren"** — er kann dort niemanden
+entfernen.
+
+### Eine Gruppe aktivieren
+
+```bash
+python3 scripts/aktiviere-gruppe.py <chat_id> [--trockenlauf]
+python3 scripts/aktiviere-gruppe.py --alle-bereiten --trockenlauf
+```
+
+Das Skript **weigert sich**, wenn der Bot dort nicht Administrator mit Sperr- und
+Löschrecht ist. Eine Gruppe auf `managed` zu setzen, in der der Bot nichts darf,
+sieht im Datenbestand nach Schutz aus und ist keiner.
+
+Danach muss der Bot den neuen Stand übernehmen: `docker compose up -d`.
+
+---
+
 ## Regeln ein- und ausschalten
 
 | Regel | Schalter | Stand 10.09.2026 |

@@ -4,6 +4,25 @@ Ein professioneller Telegram Bot zur automatischen Erkennung und Bekämpfung von
 
 ---
 
+## ⚠️ DIE WICHTIGSTE ZAHL ÜBER DIESES SYSTEM
+
+**In 91,4 % der von Menschen gemeldeten Betrugsfälle hatte der Bot nichts erkannt.**
+
+441 der 477 Bans gehen auf eine menschliche Entscheidung zurück. Von diesen 441
+hatte der Bot vorher **38** inhaltlich auffällig gefunden. Umgekehrt wurden von
+886 bot-erkannten Konten nur 42 gebannt.
+
+Der Grund ist strukturell und nicht durch bessere Regeln zu beheben: **Der Bot
+sieht Inhalte in Gruppen. Die Täter schreiben privat.** Ein Bot bekommt private
+Nachrichten zwischen zwei Menschen nie zu sehen.
+
+> **Solange das so ist, ist jede Türregel Kosmetik.** Die wirksamste Verbesserung
+> wäre, dass Meldungen von Mitgliedern schnell und einfach ankommen — nicht ein
+> weiteres Merkmal an der Tür. (Als nächster Vorschlag notiert, noch nicht gebaut:
+> siehe `docs/MESSUNG-ZUTRITTSREGELN-2026-09-10.md`.)
+
+---
+
 ## ⚠️ BEVOR JEMAND WIEDER „Konten ohne Benutzernamen aussperren" VORSCHLÄGT
 
 Das wurde am 10.09.2026 gemessen, bevor es gebaut wurde. **Es wirkt nicht.**
