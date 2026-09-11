@@ -96,6 +96,19 @@ async function main() {
     pruefe(eintragA.gemeldet_username === 'anneliese_cfd', 'Benutzername des Gemeldeten gespeichert');
     pruefe(eintragA.herkunft === 'kennung', 'Herkunft als "kennung" vermerkt');
     pruefe(eintragA.bearbeitet === 0, 'Meldung steht als unbearbeitet — nichts automatisch passiert');
+
+    // Die Rohdaten sind der entscheidende Teil: ohne sie liesse sich bei einer
+    // echten Meldung nicht unterscheiden, ob Telegram nichts geliefert hat oder
+    // ob mein Auswerter ein Feld nicht kennt.
+    pruefe(!!eintragA.roh_weiterleitung, 'Rohdaten der Weiterleitung gespeichert');
+    if (eintragA.roh_weiterleitung) {
+      const roh = JSON.parse(eintragA.roh_weiterleitung);
+      pruefe(roh.forward_origin?.type === 'user',
+        'Rohdaten enthalten unveraendert, was Telegram schickte');
+      pruefe(roh.forward_origin?.sender_user?.id === 8888777666,
+        'auch die Kennung steht roh drin, nicht nur gedeutet');
+    }
+    pruefe(eintragA.roh_art === 'text', 'Nachrichtenart festgehalten: ' + eintragA.roh_art);
   }
 
   // ---------------------------------------------------------------- Fall B
@@ -127,6 +140,33 @@ async function main() {
     pruefe(eintragB.gemeldet_id === null, 'keine Kennung gespeichert (richtig)');
     pruefe(eintragB.gemeldet_name === 'Anni Weninger', 'Anzeigename gespeichert: ' + eintragB.gemeldet_name);
     pruefe(eintragB.herkunft === 'nur_name', 'Herkunft als "nur_name" vermerkt');
+    pruefe(!!eintragB.roh_weiterleitung, 'auch hier sind die Rohdaten da');
+  }
+
+  // ---------------------------------------------------- Fall B2: alles leer
+  // Der wichtigste Fall fuer die freie Wildbahn: Telegram liefert zur Herkunft
+  // gar nichts. Dann muss die Meldung trotzdem ankommen — und die Rohdaten
+  // muessen zeigen, dass die Leere von Telegram kam und nicht von mir.
+  console.log('');
+  console.log('=== Fall B2: Telegram liefert KEINE Herkunft ===');
+  const b2 = baueKontext({
+    message_id: 22,
+    chat: { id: MELDER_ID, type: 'private' },
+    from: { id: MELDER_ID, is_bot: false, first_name: 'Test', username: 'testmelderin' },
+    text: `${MARKE}-B2 Nachricht ohne jede Herkunftsangabe`,
+    forward_date: Math.floor(Date.now() / 1000) - 100,
+  });
+  await behandleMeldung(b2.ctx);
+  const eintragB2 = db.prepare(
+    'SELECT * FROM meldungen WHERE text LIKE ? ORDER BY id DESC LIMIT 1'
+  ).get(MARKE + '-B2%') as any;
+  pruefe(!!eintragB2, 'Meldung wird auch ohne Herkunft gespeichert');
+  if (eintragB2) {
+    pruefe(eintragB2.herkunft === 'unbekannt', 'als "unbekannt" vermerkt');
+    const roh = JSON.parse(eintragB2.roh_weiterleitung || '{}');
+    const gefuellt = Object.entries(roh).filter(([, v]) => v !== null && v !== undefined);
+    pruefe(gefuellt.length === 1 && gefuellt[0][0] === 'forward_date',
+      'Rohdaten belegen: nur forward_date kam an, sonst nichts — die Leere ist Telegrams');
   }
 
   // ------------------------------------------------- Fall C: keine Weiterleitung

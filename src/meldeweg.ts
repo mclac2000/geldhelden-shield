@@ -72,12 +72,36 @@ function stelleTabelleSicher(): void {
       text TEXT,
       original_datum INTEGER,
       bearbeitet INTEGER NOT NULL DEFAULT 0,
-      notiz TEXT
+      notiz TEXT,
+      -- Was Telegram TATSAECHLICH geliefert hat, unveraendert.
+      --
+      -- Ohne das laesst sich der wichtigste Fall nicht unterscheiden:
+      -- Kommt "herkunft = unbekannt" daher, dass Telegram nichts mitgeschickt
+      -- hat — oder daher, dass mein Auswerter ein Feld nicht kennt?
+      -- Das eine ist eine Eigenschaft von Telegram, das andere mein Fehler.
+      --
+      -- Ein Meldeweg, der im Test funktioniert und in freier Wildbahn leere
+      -- Felder bekommt, ist kein Meldeweg. Merken kann man das nur hier.
+      roh_weiterleitung TEXT,
+      roh_art TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_meldungen_created ON meldungen(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_meldungen_gemeldet ON meldungen(gemeldet_id);
     CREATE INDEX IF NOT EXISTS idx_meldungen_melder ON meldungen(melder_id);
   `);
+  // Nachtraeglich fuer eine Tabelle, die vor dem 11.09.2026 angelegt wurde.
+  for (const [spalte, typ] of [['roh_weiterleitung', 'TEXT'], ['roh_art', 'TEXT']]) {
+    try {
+      const vorhanden = (getDatabase().prepare('PRAGMA table_info(meldungen)').all() as Array<{ name: string }>)
+        .some((s) => s.name === spalte);
+      if (!vorhanden) {
+        getDatabase().exec(`ALTER TABLE meldungen ADD COLUMN ${spalte} ${typ}`);
+        console.log(`[Meldeweg] Spalte meldungen.${spalte} ergaenzt`);
+      }
+    } catch (error: any) {
+      console.warn('[Meldeweg] Spaltenpruefung:', error?.message);
+    }
+  }
   tabelleBereit = true;
 }
 
@@ -198,15 +222,40 @@ export async function behandleMeldung(ctx: Context): Promise<boolean> {
   `).get(ctx.from.id, text.slice(0, 4000), Date.now() - 10 * 60 * 1000) as any;
 
   if (!schon) {
+    // Alles, was Telegram zur Herkunft mitgeschickt hat — roh und ungedeutet.
+    let roh: string | null = null;
+    try {
+      roh = JSON.stringify({
+        forward_origin: msg.forward_origin ?? null,
+        forward_from: msg.forward_from ?? null,
+        forward_from_chat: msg.forward_from_chat ?? null,
+        forward_sender_name: msg.forward_sender_name ?? null,
+        forward_date: msg.forward_date ?? null,
+      }).slice(0, 4000);
+    } catch { /* darf die Meldung nicht verhindern */ }
+
+    // Welche Art Nachricht war es? Ein Bild ohne Text ist kein Fehler,
+    // sieht in der Datenbank aber genauso aus wie eine leere Nachricht.
+    const art = ['text', 'photo', 'video', 'voice', 'video_note', 'document',
+      'sticker', 'animation', 'audio', 'contact', 'story']
+      .filter((k) => (msg as any)[k] !== undefined).join(',') || 'unbekannt';
+
     db.prepare(`
       INSERT INTO meldungen
         (created_at, melder_id, melder_username, melder_name,
-         gemeldet_id, gemeldet_username, gemeldet_name, herkunft, text, original_datum)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         gemeldet_id, gemeldet_username, gemeldet_name, herkunft, text, original_datum,
+         roh_weiterleitung, roh_art)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       Date.now(), ctx.from.id, ctx.from.username ?? null, melderName,
-      h.id, h.username, h.name, h.art, text.slice(0, 4000), h.datum
+      h.id, h.username, h.name, h.art, text.slice(0, 4000), h.datum,
+      roh, art
     );
+
+    // Auch ins Protokoll, damit der erste echte Fall sofort sichtbar ist,
+    // ohne die Datenbank zu oeffnen.
+    console.log(`[Meldeweg][EINGANG] melder=${ctx.from.id} herkunft=${h.art} ` +
+      `gemeldet_id=${h.id ?? '-'} art=${art} roh=${roh ?? '(keins)'}`);
   }
 
   // Dem Mitglied sofort antworten. Wer keine Rueckmeldung bekommt, meldet nie wieder.
