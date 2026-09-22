@@ -50,6 +50,10 @@ export interface Config {
   firstMessageCheckEnabled: boolean;
   /** Erstnachrichten-Prüfung: sperrt automatisch */
   firstMessageAutoBan: boolean;
+  /** Krypto-Ankauf-Betrug: bewertet und meldet */
+  cryptoBuyCheckEnabled: boolean;
+  /** Krypto-Ankauf-Betrug: sperrt automatisch. Legt Marco um, keine Sitzung. */
+  cryptoBuyAutoBan: boolean;
   /**
    * Zeitpunkt des Scharfschaltens (ISO oder ms). In den ersten 48 Stunden
    * danach wird jede Sperre im Admin-Chat als Stichprobe auf die neue Regel
@@ -348,6 +352,8 @@ export function loadConfig(): Config {
   // die Trefferzahl an echten Nachrichten gemessen wurde.
   const firstMessageCheckEnabled = parseBoolean(process.env.FIRST_MESSAGE_CHECK_ENABLED, true);
   const firstMessageAutoBan = parseBoolean(process.env.FIRST_MESSAGE_AUTO_BAN, false);
+  const cryptoBuyCheckEnabled = parseBoolean(process.env.CRYPTO_BUY_CHECK_ENABLED, true);
+  const cryptoBuyAutoBan = parseBoolean(process.env.CRYPTO_BUY_AUTO_BAN, false);
   const armedRaw = (process.env.FIRST_MESSAGE_ARMED_AT || '').trim();
   const armedParsed = armedRaw ? Date.parse(armedRaw) : NaN;
   const firstMessageArmedAt = Number.isFinite(armedParsed) ? armedParsed : null;
@@ -460,6 +466,8 @@ Mehr Infos: {bio_link}`;
     firstMessageCheckEnabled,
     firstMessageAutoBan,
     firstMessageArmedAt,
+    cryptoBuyCheckEnabled,
+    cryptoBuyAutoBan,
     usernameGateEnabled,
     usernameGateGroups,
     usernameGateNotify,

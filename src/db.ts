@@ -1113,6 +1113,28 @@ export function initDatabase(): any {
       CREATE INDEX IF NOT EXISTS idx_fms_user ON first_message_samples(user_id);
       CREATE INDEX IF NOT EXISTS idx_fms_created ON first_message_samples(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_fms_gesperrt ON first_message_samples(gesperrt);
+
+      -- Krypto-Ankauf-Betrug (09/2026). Meldeprotokoll, keine Durchsetzung:
+      -- durchgesetzt bleibt 0, solange Marco den Schalter nicht umlegt.
+      CREATE TABLE IF NOT EXISTS crypto_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        chat_id TEXT,
+        username TEXT,
+        anzeigename TEXT,
+        punkte INTEGER NOT NULL,
+        tragende_gruppen INTEGER NOT NULL,
+        massnahme TEXT NOT NULL,
+        grund TEXT,
+        signale TEXT,
+        belege TEXT,
+        text TEXT,
+        durchgesetzt INTEGER NOT NULL DEFAULT 0,
+        erledigt INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_crypto_created ON crypto_events(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_crypto_user ON crypto_events(user_id);
     `);
   } catch (error: any) {
     if (!error.message.includes('duplicate column name') && !error.message.includes('already exists')) {
@@ -4326,6 +4348,57 @@ export function getVerpassteFaelle(limit = 40): any[] {
     `).all(limit);
   } catch {
     return [];
+  }
+}
+
+export interface CryptoEvent {
+  userId: number; chatId: string | null; username: string | null;
+  anzeigename: string; punkte: number; tragendeGruppen: number;
+  massnahme: string; grund: string; signale: string[]; belege: string[];
+  text: string; durchgesetzt: boolean;
+}
+
+export function logCryptoEvent(e: CryptoEvent): void {
+  try {
+    getDatabase().prepare(`
+      INSERT INTO crypto_events
+        (created_at, user_id, chat_id, username, anzeigename, punkte,
+         tragende_gruppen, massnahme, grund, signale, belege, text, durchgesetzt)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      Date.now(), e.userId, e.chatId, e.username, e.anzeigename, e.punkte,
+      e.tragendeGruppen, e.massnahme, e.grund,
+      JSON.stringify(e.signale), JSON.stringify(e.belege),
+      (e.text || '').substring(0, 2000), e.durchgesetzt ? 1 : 0
+    );
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in logCryptoEvent:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+export function getCryptoEvents(limit = 25): any[] {
+  try {
+    return getDatabase().prepare(
+      'SELECT * FROM crypto_events ORDER BY created_at DESC LIMIT ?'
+    ).all(limit);
+  } catch {
+    return [];
+  }
+}
+
+/** Personen, nicht Zeilen — ein Konto kann in mehreren Gruppen posten. */
+export function getCryptoStats(seit: number): { sperren: number; alarme: number; zeilen: number } {
+  try {
+    const db = getDatabase();
+    const z = (m: string) => (db.prepare(
+      'SELECT COUNT(DISTINCT user_id) AS n FROM crypto_events WHERE massnahme = ? AND created_at >= ?'
+    ).get(m, seit) as any)?.n ?? 0;
+    return {
+      sperren: z('sperren'), alarme: z('alarm'),
+      zeilen: (db.prepare('SELECT COUNT(*) AS n FROM crypto_events WHERE created_at >= ?').get(seit) as any)?.n ?? 0,
+    };
+  } catch {
+    return { sperren: 0, alarme: 0, zeilen: 0 };
   }
 }
 

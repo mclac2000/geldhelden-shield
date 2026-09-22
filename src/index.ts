@@ -1501,6 +1501,34 @@ bot.command('links', async (ctx: Context) => {
 // Command: /profile [sperren|alarm|<user_id>]
 // Protokoll der Profilprüfung. Jede Entscheidung mit Grund und dem gefundenen
 // Bio-Wortlaut — damit ein Fehlalarm nachvollziehbar und rücknehmbar ist.
+// /krypto — was die Krypto-Ankauf-Erkennung gefunden hat. Reine Meldeliste:
+// gesperrt wird hier nichts automatisch, die Knöpfe in den Meldungen führen
+// die Maßnahme aus.
+bot.command('krypto', async (ctx: Context) => {
+  await handleAdminCommand(ctx, 'krypto', async (ctx) => {
+    const { getCryptoEvents, getCryptoStats } = await import('./db');
+    const s = getCryptoStats(Date.now() - 30 * 24 * 3600 * 1000);
+    let m = '<b>🪙 Krypto-Ankauf-Betrug</b>\n\n';
+    m += `Erkennung: ${config.cryptoBuyCheckEnabled ? 'an' : 'aus'}\n`;
+    m += `Automatische Sperre: <b>${config.cryptoBuyAutoBan ? 'AN' : 'AUS — Meldung an dich'}</b>\n\n`;
+    m += `<b>Letzte 30 Tage</b> (Personen):\n`;
+    m += `• Sperrwürdig eingestuft: <b>${s.sperren}</b>\n`;
+    m += `• Verdachtsfälle: <b>${s.alarme}</b>\n`;
+    m += `• Meldungen insgesamt: ${s.zeilen}\n\n`;
+    const liste = getCryptoEvents(8);
+    if (liste.length === 0) {
+      m += '<i>Noch nichts gefunden.</i>';
+    } else {
+      for (const e of liste) {
+        const wann = new Date(e.created_at).toISOString().substring(5, 16).replace('T', ' ');
+        m += `\n${e.massnahme === 'sperren' ? '🪙' : '⚠️'} <code>${e.user_id}</code> @${e.username || '-'} — ${e.punkte} P., ${e.tragende_gruppen}/4 (${wann})\n`;
+        m += `   <code>${String(e.text || '').substring(0, 110).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code>\n`;
+      }
+    }
+    await ctx.reply(m, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+  });
+});
+
 // /erstnachricht [sperren|alarm] — zeigt, was die Erstnachrichten-Prüfung
 // bewertet hat. Im Beobachtungsmodus ist das die Datengrundlage dafür, ob die
 // Regel scharf gestellt werden darf.
@@ -1940,6 +1968,18 @@ bot.on('message', async (ctx: Context, next) => {
       return; // Early return - Scam wurde bereits behandelt
     }
     
+    // 1a0. Krypto-Ankauf-Betrug. Läuft VOR der Erstnachrichten-Prüfung und
+    // gilt für JEDE Nachricht, nicht nur die ersten fünf eines Kontos —
+    // dieser Scam kommt auch von Konten, die lange still mitgelesen haben.
+    // Meldet nur, sperrt nicht (außer CRYPTO_BUY_AUTO_BAN ist gesetzt).
+    try {
+      const { pruefeKryptoAnkauf } = await import('./cryptoBuyGuard');
+      const krypto = await pruefeKryptoAnkauf(ctx);
+      if (krypto.erledigt) return;
+    } catch (kErr: unknown) {
+      console.error('[KryptoAnkauf] Fehler im Handler:', kErr instanceof Error ? kErr.message : String(kErr));
+    }
+
     // 1a. Erstnachrichten-Prüfung: Was ein neues Konto in seinen ersten
     // Nachrichten schreibt. Läuft NACH der Scam-Erkennung (deren Löschung hat
     // Vorrang) und VOR der Link-Erfassung, weil ein Werbeangebot ohne Link
