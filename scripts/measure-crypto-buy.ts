@@ -78,6 +78,23 @@ function main(): void {
     sicher(`SELECT gemeldet_id AS user_id, gemeldet_username AS username, text
             FROM meldungen WHERE text IS NOT NULL AND text != ''`), 'text');
 
+  // POSITIVKONTROLLE — ohne sie ist eine Null wertlos.
+  // Der bekannte Betrugstext läuft durch dieselbe Messstrecke wie die echten
+  // Texte. Wird er nicht getroffen, ist nicht die Welt sauber, sondern das
+  // Messskript kaputt.
+  const KONTROLLE = 'Hello! We are Royal Dynasty International Co., Ltd., headquartered in Shanghai. ' +
+    'We are currently acquiring large quantities of USDT, ETH, BTC and other cryptocurrencies globally. ' +
+    'We have an urgent need for large volumes of USDT. If you hold USDT, you can earn a commission by trading with us. ' +
+    'We guarantee a commission of 10% to 25% on every transaction. We provide full upfront payment to USDT holders. ' +
+    'You simply transfer the USDT to us after receiving the funds. Contact us now: @beispielkennung';
+  const k = bewerte(KONTROLLE);
+  console.log(`\n  Positivkontrolle (bekannter Betrugstext): ${k.punkte} P., ${k.gruppen}/4 -> ${k.massnahme.toUpperCase()}`);
+  if (k.massnahme !== 'sperren') {
+    console.log('  ❌ MESSSTRECKE DEFEKT — die Null unten bedeutet nichts.');
+    process.exit(1);
+  }
+  console.log('  ✅ Messstrecke nachgewiesen: sie kann treffen.');
+
   console.log('\n' + '='.repeat(70));
   console.log('ERGEBNIS');
   console.log('='.repeat(70));
