@@ -54,6 +54,19 @@ export interface Config {
   cryptoBuyCheckEnabled: boolean;
   /** Krypto-Ankauf-Betrug: sperrt automatisch. Legt Marco um, keine Sitzung. */
   cryptoBuyAutoBan: boolean;
+  /** Copy-Trading-Scam: bewertet, löscht und meldet */
+  copyTradingCheckEnabled: boolean;
+  /**
+   * Copy-Trading-Scam: sperrt bei einem sicheren Treffer automatisch.
+   *
+   * Steht auf true — anders als beim Krypto-Ankauf, und das ist eine
+   * Entscheidung, nicht ein Versehen: Für eine Sperre müssen hier fünf
+   * Bedingungen zusammenkommen, darunter ein Werbecode oder eine Weiterleitung
+   * nach draußen, und ein eingesessenes Mitglied ist davon grundsätzlich
+   * ausgenommen. Jede Sperre ist mit einem Knopf in der Meldung rückholbar.
+   * Auf false gestellt bleibt es bei Löschen und Vorlegen.
+   */
+  copyTradingAutoBan: boolean;
   /**
    * Zeitpunkt des Scharfschaltens (ISO oder ms). In den ersten 48 Stunden
    * danach wird jede Sperre im Admin-Chat als Stichprobe auf die neue Regel
@@ -354,6 +367,8 @@ export function loadConfig(): Config {
   const firstMessageAutoBan = parseBoolean(process.env.FIRST_MESSAGE_AUTO_BAN, false);
   const cryptoBuyCheckEnabled = parseBoolean(process.env.CRYPTO_BUY_CHECK_ENABLED, true);
   const cryptoBuyAutoBan = parseBoolean(process.env.CRYPTO_BUY_AUTO_BAN, false);
+  const copyTradingCheckEnabled = parseBoolean(process.env.COPY_TRADING_CHECK_ENABLED, true);
+  const copyTradingAutoBan = parseBoolean(process.env.COPY_TRADING_AUTO_BAN, true);
   const armedRaw = (process.env.FIRST_MESSAGE_ARMED_AT || '').trim();
   const armedParsed = armedRaw ? Date.parse(armedRaw) : NaN;
   const firstMessageArmedAt = Number.isFinite(armedParsed) ? armedParsed : null;
@@ -468,6 +483,8 @@ Mehr Infos: {bio_link}`;
     firstMessageArmedAt,
     cryptoBuyCheckEnabled,
     cryptoBuyAutoBan,
+    copyTradingCheckEnabled,
+    copyTradingAutoBan,
     usernameGateEnabled,
     usernameGateGroups,
     usernameGateNotify,

@@ -1957,6 +1957,23 @@ bot.on('message', async (ctx: Context, next) => {
     const { cleanupServiceMessages } = await import('./serviceCleanup');
     await cleanupServiceMessages(ctx);
     
+    // 0. Copy-Trading-Betrug. Läuft VOR der alten Scam-Erkennung, und zwar
+    // aus einem Grund, der nichts mit Vorrang zu tun hat: Dieser Erkenner
+    // führt ein Gedächtnis über Bild-Alben, und dafür muss er JEDE
+    // Albumnachricht sehen. Steigt die alte Scam-Erkennung bei einem
+    // Geschwisterbild vorher mit einem early return aus, bleibt das zweite
+    // Gewinnbild stehen.
+    //
+    // Gilt für jede Nachricht, nicht nur die ersten fünf eines Kontos: Der
+    // Absender wird bewertet, nicht als Filter benutzt.
+    try {
+      const { pruefeCopyTrading } = await import('./copyTradingGuard');
+      const ct = await pruefeCopyTrading(ctx);
+      if (ct.erledigt) return; // Nachricht ist weg, alles Weitere liefe ins Leere
+    } catch (ctErr: unknown) {
+      console.error('[CopyTrading] Fehler im Handler:', ctErr instanceof Error ? ctErr.message : String(ctErr));
+    }
+
     // 1. Scam-Erkennung (neue robuste Version) - VOR anderer Moderation
     const { moderateScamMessage } = await import('./scamModeration');
     const scamHandled = await moderateScamMessage(ctx);
@@ -2327,6 +2344,14 @@ bot.on('callback_query', async (ctx: Context) => {
         markIdentityEventsReverted(pardonId);
         const { markProfileEventsReverted } = await import('./db');
         markProfileEventsReverted(pardonId);
+        // Copy-Trading: Rücknahme vermerken. Das ist die einzige Zahl, an der
+        // sich die Fehlalarmquote dieser Regel im Betrieb messen lässt — ohne
+        // sie wüsste niemand, wie oft ein Mensch widersprochen hat.
+        const { vermerkeCopyTradingRuecknahme } = await import('./db');
+        const ctZeilen = vermerkeCopyTradingRuecknahme(pardonId, ctx.from.id);
+        if (ctZeilen > 0) {
+          console.log(`[CopyTrading][RUECKNAHME] user=${pardonId} zeilen=${ctZeilen} durch admin=${ctx.from.id}`);
+        }
         const res = await unbanUserInAllGroups(pardonId, `Sperre aufgehoben durch Admin ${ctx.from.id}`);
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
         await sendToAdminLogChat(

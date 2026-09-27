@@ -1135,6 +1135,52 @@ export function initDatabase(): any {
       );
       CREATE INDEX IF NOT EXISTS idx_crypto_created ON crypto_events(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_crypto_user ON crypto_events(user_id);
+
+      -- Copy-Trading-Scam (27.09.2026, nach dem Fall Koh Phangan).
+      --
+      -- Hier stehen ALLE Befunde, auch die, bei denen nichts getan wurde
+      -- (massnahme='melden'). Das ist der Unterschied zwischen "was habe ich
+      -- gefunden" und "was habe ich übersehen": Ohne die harmlosen Zeilen
+      -- lässt sich später nicht nachrechnen, ob die Schwelle zu hoch stand.
+      --
+      -- rueckgenommen wird auf 1 gesetzt, wenn ein Mensch die Maßnahme über
+      -- den Knopf in der Meldung zurückgeholt hat. Daran, und nur daran,
+      -- lässt sich die Fehlalarmquote im Betrieb messen.
+      CREATE TABLE IF NOT EXISTS copy_trading_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        chat_id TEXT,
+        chat_titel TEXT,
+        message_id INTEGER,
+        media_group_id TEXT,
+        username TEXT,
+        anzeigename TEXT,
+        punkte INTEGER NOT NULL,
+        tragende_gruppen INTEGER NOT NULL,
+        leitsignal INTEGER NOT NULL DEFAULT 0,
+        eingesessen INTEGER NOT NULL DEFAULT 0,
+        nachrichten_in_gruppe INTEGER,
+        konto_alter_tage INTEGER,
+        massnahme TEXT NOT NULL,
+        grund TEXT,
+        signale TEXT,
+        belege TEXT,
+        text TEXT,
+        aus_bildunterschrift INTEGER NOT NULL DEFAULT 0,
+        geloescht INTEGER NOT NULL DEFAULT 0,
+        geloeschte_nachrichten INTEGER NOT NULL DEFAULT 0,
+        gesperrt INTEGER NOT NULL DEFAULT 0,
+        gesperrt_in_gruppen INTEGER NOT NULL DEFAULT 0,
+        durchgesetzt INTEGER NOT NULL DEFAULT 0,
+        rueckgenommen INTEGER NOT NULL DEFAULT 0,
+        rueckgenommen_am INTEGER,
+        rueckgenommen_von INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_ct_created ON copy_trading_events(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ct_user ON copy_trading_events(user_id);
+      CREATE INDEX IF NOT EXISTS idx_ct_chat ON copy_trading_events(chat_id);
+      CREATE INDEX IF NOT EXISTS idx_ct_massnahme ON copy_trading_events(massnahme);
     `);
   } catch (error: any) {
     if (!error.message.includes('duplicate column name') && !error.message.includes('already exists')) {
@@ -4373,6 +4419,133 @@ export function logCryptoEvent(e: CryptoEvent): void {
     );
   } catch (error: unknown) {
     console.error('[DB] Fehler in logCryptoEvent:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+// ===========================================================================
+// Copy-Trading-Scam
+// ===========================================================================
+
+/**
+ * NUR LESEN — schreibt nichts mit.
+ *
+ * Es gibt schon zaehleUndHoleNachrichtNr(), aber die ZÄHLT HOCH. Sie von
+ * einer zweiten Stelle im selben Nachrichtenweg zu rufen, würde die
+ * Nummerierung der Erstnachrichten-Regel um eins verschieben — und zwar
+ * lautlos: Die Zahl wäre danach falsch, ohne Fehler und ohne Meldung. Genau
+ * diese Sorte Fehler kostet hier normalerweise Wochen.
+ *
+ * Ergebnis ist null, wenn über das Konto in dieser Gruppe nichts bekannt ist.
+ * Null heißt „weiß ich nicht", nicht „hat nie geschrieben" — und wird in der
+ * Bewertung auch so behandelt.
+ */
+export function leseNachrichtenStand(userId: number, chatId: string): number | null {
+  try {
+    const r = getDatabase().prepare(
+      'SELECT anzahl FROM first_message_counts WHERE user_id = ? AND chat_id = ?'
+    ).get(userId, chatId) as any;
+    if (r && typeof r.anzahl === 'number') return r.anzahl;
+
+    // Zweite Quelle: Wer vor Einführung des Zählers schon da war, steht in
+    // der Bestandsaufnahme. Dann wissen wir zwar keine Nachrichtenzahl, aber
+    // dass das Konto nicht von heute ist — das ist der Kern der Frage.
+    const b = getDatabase().prepare(
+      'SELECT COUNT(*) AS n FROM baseline_members WHERE user_id = ? AND chat_id = ?'
+    ).get(userId, chatId) as any;
+    if ((b?.n ?? 0) > 0) return null;
+
+    return null;
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in leseNachrichtenStand:', error instanceof Error ? error.message : String(error));
+    return null;
+  }
+}
+
+export interface CopyTradingEventZeile {
+  userId: number; chatId: string | null; chatTitel: string | null;
+  messageId: number | null; mediaGroupId: string | null;
+  username: string | null; anzeigename: string;
+  punkte: number; tragendeGruppen: number; leitsignal: boolean; eingesessen: boolean;
+  nachrichtenInGruppe: number | null; kontoAlterTage: number | null;
+  massnahme: string; grund: string; signale: string[]; belege: string[];
+  text: string; ausBildunterschrift: boolean;
+  geloescht: boolean; geloeschteNachrichten: number;
+  gesperrt: boolean; gesperrtInGruppen: number; durchgesetzt: boolean;
+}
+
+/** Gibt die id der geschriebenen Zeile zurück, oder null. */
+export function logCopyTradingEvent(e: CopyTradingEventZeile): number | null {
+  try {
+    const r = getDatabase().prepare(`
+      INSERT INTO copy_trading_events
+        (created_at, user_id, chat_id, chat_titel, message_id, media_group_id,
+         username, anzeigename, punkte, tragende_gruppen, leitsignal, eingesessen,
+         nachrichten_in_gruppe, konto_alter_tage, massnahme, grund, signale, belege,
+         text, aus_bildunterschrift, geloescht, geloeschte_nachrichten,
+         gesperrt, gesperrt_in_gruppen, durchgesetzt)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      Date.now(), e.userId, e.chatId, e.chatTitel, e.messageId, e.mediaGroupId,
+      e.username, e.anzeigename, e.punkte, e.tragendeGruppen,
+      e.leitsignal ? 1 : 0, e.eingesessen ? 1 : 0,
+      e.nachrichtenInGruppe, e.kontoAlterTage, e.massnahme, e.grund,
+      JSON.stringify(e.signale), JSON.stringify(e.belege),
+      (e.text || '').substring(0, 2000), e.ausBildunterschrift ? 1 : 0,
+      e.geloescht ? 1 : 0, e.geloeschteNachrichten,
+      e.gesperrt ? 1 : 0, e.gesperrtInGruppen, e.durchgesetzt ? 1 : 0
+    );
+    return Number(r.lastInsertRowid) || null;
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in logCopyTradingEvent:', error instanceof Error ? error.message : String(error));
+    return null;
+  }
+}
+
+/** Rücknahme vermerken. Wird vom pardon_user-Knopf gerufen. */
+export function vermerkeCopyTradingRuecknahme(userId: number, durchWen: number): number {
+  try {
+    const r = getDatabase().prepare(`
+      UPDATE copy_trading_events
+         SET rueckgenommen = 1, rueckgenommen_am = ?, rueckgenommen_von = ?
+       WHERE user_id = ? AND rueckgenommen = 0 AND durchgesetzt = 1
+    `).run(Date.now(), durchWen, userId);
+    return r.changes ?? 0;
+  } catch (error: unknown) {
+    console.error('[DB] Fehler in vermerkeCopyTradingRuecknahme:', error instanceof Error ? error.message : String(error));
+    return 0;
+  }
+}
+
+export function getCopyTradingEvents(limit = 25): any[] {
+  try {
+    return getDatabase().prepare(
+      'SELECT * FROM copy_trading_events ORDER BY created_at DESC LIMIT ?'
+    ).all(limit);
+  } catch {
+    return [];
+  }
+}
+
+/** Personen, nicht Zeilen. Plus die Zahl, die zählt: zurückgenommene Sperren. */
+export function getCopyTradingStats(seit: number): {
+  sperren: number; loeschungen: number; meldungen: number;
+  zeilen: number; ruecknahmen: number;
+} {
+  try {
+    const db = getDatabase();
+    const z = (m: string) => (db.prepare(
+      'SELECT COUNT(DISTINCT user_id) AS n FROM copy_trading_events WHERE massnahme = ? AND created_at >= ?'
+    ).get(m, seit) as any)?.n ?? 0;
+    return {
+      sperren: z('sperren'), loeschungen: z('loeschen'), meldungen: z('melden'),
+      zeilen: (db.prepare('SELECT COUNT(*) AS n FROM copy_trading_events WHERE created_at >= ?')
+        .get(seit) as any)?.n ?? 0,
+      ruecknahmen: (db.prepare(
+        'SELECT COUNT(*) AS n FROM copy_trading_events WHERE rueckgenommen = 1 AND created_at >= ?'
+      ).get(seit) as any)?.n ?? 0,
+    };
+  } catch {
+    return { sperren: 0, loeschungen: 0, meldungen: 0, zeilen: 0, ruecknahmen: 0 };
   }
 }
 

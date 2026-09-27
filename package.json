@@ -14,7 +14,8 @@
     "test:links": "ts-node scripts/test-campaign-links.ts",
     "test:startup": "ts-node scripts/test-startup-order.ts",
     "test:profile": "ts-node scripts/test-profile-risk.ts",
-    "test": "npm run test:startup && npm run test:identity && npm run test:links && npm run test:profile"
+    "test:copytrading": "ts-node scripts/test-copy-trading.ts",
+    "test": "npm run test:startup && npm run test:identity && npm run test:links && npm run test:profile && npm run test:copytrading"
   },
   "keywords": [
     "telegram",
