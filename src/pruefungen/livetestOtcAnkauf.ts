@@ -26,12 +26,25 @@ import { pruefeKryptoAnkauf } from './../cryptoBuyGuard';
 const TESTGRUPPE = process.env.LIVETEST_CHAT || config.adminLogChat;
 
 /**
- * Wegwerf-Kennung für den Scam-Teil. Eine erfundene, sehr hohe User-ID: Sie
- * gehört keinem Menschen, und eine Sperre darauf schadet niemandem. Der Preis
- * dafür ist, dass Telegram die Sperre in den meisten Gruppen ablehnt — was
- * genau deshalb hier KEIN Fehlschlag ist. Gemessen wird die Löschung und der
- * Eintrag auf der Sperrliste, nicht die Zahl der Gruppen.
+ * ZWEI ABSENDER, UND DER UNTERSCHIED IST DER GANZE PUNKT.
+ *
+ * Erster Anlauf dieses Livetests am 05.10.2026 lief mit einer erfundenen
+ * User-ID. Löschen ging, die Sperre nicht: Telegram antwortet auf eine
+ * ID, zu der kein Konto gehört, in JEDER Gruppe mit
+ * `PARTICIPANT_ID_INVALID`. Der Test meldete „Konto nicht gesperrt" — und
+ * das war ein Befund über die Test-ID, nicht über den Bot.
+ *
+ * Deshalb wird der Sperrweg an einem ECHTEN Konto nachgewiesen:
+ * 8536848765 / @KryptoEuleStefanV7, der Copy-Trading-Betrüger vom
+ * 27.09.2026. Es ist bereits gesperrt, gehört gesperrt, und der Sperrvermerk
+ * wird vor dem Lauf zurückgesetzt, damit die Wiederholungsbremse den
+ * automatischen Weg nicht überspringt. Niemand wird dadurch neu betroffen.
+ *
+ * Die erfundene ID bleibt für den zweiten Scam-Fall und für die Gegenprobe im
+ * Einsatz — dort geht es um Löschen und Nicht-Löschen, und dafür reicht sie.
+ * Was sie nicht kann, wird dort auch nicht behauptet.
  */
+const ECHTES_BETRUGSKONTO = 8536848765;
 const WEGWERF_KONTO = 8999000111;
 const MITGLIED_KONTO = 8999000222;
 
@@ -92,32 +105,41 @@ async function main(): Promise<void> {
   const { removeFromBlacklist, isBlacklisted, getBannedGroupCount } = await import('./../db');
 
   // --- 1. Der Originaltext und die deutsche Variante -----------------------
-  const scamFaelle: Array<[string, string]> = [
-    ['Originaltext (englisch, mit Emoji-Kette)', ORIGINAL],
-    ['Variante auf Deutsch', VARIANTE_DEUTSCH],
+  // sperrePruefen=true nur beim echten Konto — siehe Kommentar oben.
+  const scamFaelle: Array<[string, string, number, boolean]> = [
+    ['Originaltext (englisch, mit Emoji-Kette)', ORIGINAL, ECHTES_BETRUGSKONTO, true],
+    ['Variante auf Deutsch', VARIANTE_DEUTSCH, WEGWERF_KONTO, false],
   ];
 
-  for (const [name, text] of scamFaelle) {
+  for (const [name, text, konto, sperrePruefen] of scamFaelle) {
     console.log(`\n${'-'.repeat(78)}\n${name}\n${'-'.repeat(78)}`);
     // Sperrvermerk zurücksetzen, damit die Wiederholungsbremse den
-    // automatischen Weg nicht überspringt.
-    if (isBlacklisted(WEGWERF_KONTO)) removeFromBlacklist(WEGWERF_KONTO);
+    // automatischen Weg nicht überspringt. Die Sperren in Telegram selbst
+    // bleiben davon unberührt — nur unser Merkzettel wird geleert.
+    if (isBlacklisted(konto)) removeFromBlacklist(konto);
 
     const m: any = await bot.telegram.sendMessage(TESTGRUPPE, text, { disable_notification: true } as any);
-    console.log(`  gesendet: msg=${m.message_id}`);
+    console.log(`  Absender:  ${konto}${sperrePruefen ? ' (echtes Betrugskonto)' : ' (erfundene ID, Sperre nicht prüfbar)'}`);
+    console.log(`  gesendet:  msg=${m.message_id}`);
 
-    const r = await pruefeKryptoAnkauf(kontext(bot, m, WEGWERF_KONTO, 'OTC-Testkonto'));
+    const r = await pruefeKryptoAnkauf(kontext(bot, m, konto, 'OTC-Testkonto'));
     const da = await nochDa(bot, TESTGRUPPE, m.message_id);
-    const gesperrt = isBlacklisted(WEGWERF_KONTO);
+    const gesperrt = isBlacklisted(konto);
+    const gruppen = getBannedGroupCount(konto);
 
-    console.log(`  Urteil:        ${r.massnahme.toUpperCase()}${r.grund ? ' — ' + r.grund : ''}`);
-    console.log(`  Nachricht:     ${da ? '❌ STEHT NOCH DA' : '✅ gelöscht'}`);
-    console.log(`  Sperrliste:    ${gesperrt ? '✅ eingetragen' : '❌ nicht eingetragen'}` +
-                `  (Gruppen: ${getBannedGroupCount(WEGWERF_KONTO)})`);
+    console.log(`  Urteil:     ${r.massnahme.toUpperCase()}${r.grund ? ' — ' + r.grund : ''}`);
+    console.log(`  Nachricht:  ${da ? '❌ STEHT NOCH DA' : '✅ gelöscht'}`);
+    console.log(`  Sperrliste: ${gesperrt ? '✅ eingetragen' : '— nicht eingetragen'}  (Gruppen: ${gruppen})`);
 
     if (r.massnahme !== 'sperren' && r.massnahme !== 'loeschen') fehler.push(`${name}: Urteil ${r.massnahme}`);
-    if (da) { fehler.push(`${name}: Nachricht wurde nicht gelöscht`); await bot.telegram.deleteMessage(TESTGRUPPE, m.message_id).catch(() => undefined); }
-    if (r.massnahme === 'sperren' && !gesperrt) fehler.push(`${name}: Konto nicht gesperrt`);
+    if (da) {
+      fehler.push(`${name}: Nachricht wurde nicht gelöscht`);
+      await bot.telegram.deleteMessage(TESTGRUPPE, m.message_id).catch(() => undefined);
+    }
+    if (sperrePruefen) {
+      if (!gesperrt) fehler.push(`${name}: Konto nicht auf der Sperrliste`);
+      if (gruppen < 1) fehler.push(`${name}: Konto in keiner Gruppe gesperrt`);
+    }
   }
 
   // --- 2. Gegenprobe ------------------------------------------------------
