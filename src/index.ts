@@ -1501,9 +1501,10 @@ bot.command('links', async (ctx: Context) => {
 // Command: /profile [sperren|alarm|<user_id>]
 // Protokoll der Profilprüfung. Jede Entscheidung mit Grund und dem gefundenen
 // Bio-Wortlaut — damit ein Fehlalarm nachvollziehbar und rücknehmbar ist.
-// /krypto — was die Krypto-Ankauf-Erkennung gefunden hat. Reine Meldeliste:
-// gesperrt wird hier nichts automatisch, die Knöpfe in den Meldungen führen
-// die Maßnahme aus.
+// /krypto — was die Krypto-Ankauf-Erkennung gefunden hat.
+// Seit dem 05.10.2026 (Auftrag #275) wird hier gelöscht und gesperrt, nicht
+// nur gemeldet — Marcos Entscheidung. Die Knöpfe in den Meldungen holen eine
+// Sperre zurück oder führen sie bei einem Verdachtsfall aus.
 bot.command('krypto', async (ctx: Context) => {
   await handleAdminCommand(ctx, 'krypto', async (ctx) => {
     const { getCryptoEvents, getCryptoStats } = await import('./db');
@@ -1512,16 +1513,21 @@ bot.command('krypto', async (ctx: Context) => {
     m += `Erkennung: ${config.cryptoBuyCheckEnabled ? 'an' : 'aus'}\n`;
     m += `Automatische Sperre: <b>${config.cryptoBuyAutoBan ? 'AN' : 'AUS — Meldung an dich'}</b>\n\n`;
     m += `<b>Letzte 30 Tage</b> (Personen):\n`;
-    m += `• Sperrwürdig eingestuft: <b>${s.sperren}</b>\n`;
-    m += `• Verdachtsfälle: <b>${s.alarme}</b>\n`;
-    m += `• Meldungen insgesamt: ${s.zeilen}\n\n`;
+    m += `• Gesperrt: <b>${s.sperren}</b>\n`;
+    m += `• Gelöscht ohne Sperre: <b>${s.loeschungen}</b>\n`;
+    m += `• Nur vorgelegt: <b>${s.alarme}</b>\n`;
+    m += `• Meldungen insgesamt: ${s.zeilen}\n`;
+    // Nicht was gerechnet wurde, sondern was gewirkt hat.
+    m += `• <b>Tatsächlich durchgesetzt: ${s.durchgesetzt}</b>\n\n`;
     const liste = getCryptoEvents(8);
     if (liste.length === 0) {
       m += '<i>Noch nichts gefunden.</i>';
     } else {
       for (const e of liste) {
         const wann = new Date(e.created_at).toISOString().substring(5, 16).replace('T', ' ');
-        m += `\n${e.massnahme === 'sperren' ? '🪙' : '⚠️'} <code>${e.user_id}</code> @${e.username || '-'} — ${e.punkte} P., ${e.tragende_gruppen}/4 (${wann})\n`;
+        const zeichen = e.massnahme === 'sperren' ? '🚫' : e.massnahme === 'loeschen' ? '🗑' : '⚠️';
+        m += `\n${zeichen} <code>${e.user_id}</code> @${e.username || '-'} — ${e.punkte} P., ${e.tragende_gruppen}/6` +
+             `${e.durchgesetzt ? '' : ' (nichts durchgesetzt)'} (${wann})\n`;
         m += `   <code>${String(e.text || '').substring(0, 110).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code>\n`;
       }
     }

@@ -52,7 +52,15 @@ export interface Config {
   firstMessageAutoBan: boolean;
   /** Krypto-Ankauf-Betrug: bewertet und meldet */
   cryptoBuyCheckEnabled: boolean;
-  /** Krypto-Ankauf-Betrug: sperrt automatisch. Legt Marco um, keine Sitzung. */
+  /**
+   * Krypto-Ankauf-Betrug: sperrt automatisch.
+   *
+   * Stand bis zum 05.10.2026 auf false — Marcos ausdrückliche Entscheidung im
+   * September: melden, er entscheidet. **Am 05.10.2026 hat er sie widerrufen**
+   * („löschen, Absender sperren, so wie bei den Copy-Trading-Fällen"), deshalb
+   * jetzt true. Wer das zurückdreht, braucht wieder Marco — nicht weil der
+   * Schalter heilig ist, sondern weil beide Stellungen einmal begründet waren.
+   */
   cryptoBuyAutoBan: boolean;
   /** Copy-Trading-Scam: bewertet, löscht und meldet */
   copyTradingCheckEnabled: boolean;
@@ -366,7 +374,7 @@ export function loadConfig(): Config {
   const firstMessageCheckEnabled = parseBoolean(process.env.FIRST_MESSAGE_CHECK_ENABLED, true);
   const firstMessageAutoBan = parseBoolean(process.env.FIRST_MESSAGE_AUTO_BAN, false);
   const cryptoBuyCheckEnabled = parseBoolean(process.env.CRYPTO_BUY_CHECK_ENABLED, true);
-  const cryptoBuyAutoBan = parseBoolean(process.env.CRYPTO_BUY_AUTO_BAN, false);
+  const cryptoBuyAutoBan = parseBoolean(process.env.CRYPTO_BUY_AUTO_BAN, true);
   const copyTradingCheckEnabled = parseBoolean(process.env.COPY_TRADING_CHECK_ENABLED, true);
   const copyTradingAutoBan = parseBoolean(process.env.COPY_TRADING_AUTO_BAN, true);
   const armedRaw = (process.env.FIRST_MESSAGE_ARMED_AT || '').trim();

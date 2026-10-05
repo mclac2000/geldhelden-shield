@@ -15,7 +15,9 @@
     "test:startup": "ts-node scripts/test-startup-order.ts",
     "test:profile": "ts-node scripts/test-profile-risk.ts",
     "test:copytrading": "ts-node scripts/test-copy-trading.ts",
-    "test": "npm run test:startup && npm run test:identity && npm run test:links && npm run test:profile && npm run test:copytrading"
+    "test:cryptobuy": "ts-node scripts/test-crypto-buy.ts",
+    "test:otc": "ts-node scripts/test-otc-ankauf.ts",
+    "test": "npm run test:startup && npm run test:identity && npm run test:links && npm run test:profile && npm run test:copytrading && npm run test:cryptobuy && npm run test:otc"
   },
   "keywords": [
     "telegram",

@@ -4560,18 +4560,25 @@ export function getCryptoEvents(limit = 25): any[] {
 }
 
 /** Personen, nicht Zeilen — ein Konto kann in mehreren Gruppen posten. */
-export function getCryptoStats(seit: number): { sperren: number; alarme: number; zeilen: number } {
+export function getCryptoStats(seit: number): {
+  sperren: number; loeschungen: number; alarme: number; zeilen: number; durchgesetzt: number;
+} {
   try {
     const db = getDatabase();
     const z = (m: string) => (db.prepare(
       'SELECT COUNT(DISTINCT user_id) AS n FROM crypto_events WHERE massnahme = ? AND created_at >= ?'
     ).get(m, seit) as any)?.n ?? 0;
     return {
-      sperren: z('sperren'), alarme: z('alarm'),
+      sperren: z('sperren'), loeschungen: z('loeschen'), alarme: z('alarm'),
       zeilen: (db.prepare('SELECT COUNT(*) AS n FROM crypto_events WHERE created_at >= ?').get(seit) as any)?.n ?? 0,
+      // Die Zahl, die zählt: nicht was die Regel gerechnet hat, sondern was
+      // wirklich gelöscht oder gesperrt wurde.
+      durchgesetzt: (db.prepare(
+        'SELECT COUNT(*) AS n FROM crypto_events WHERE durchgesetzt = 1 AND created_at >= ?'
+      ).get(seit) as any)?.n ?? 0,
     };
   } catch {
-    return { sperren: 0, alarme: 0, zeilen: 0 };
+    return { sperren: 0, loeschungen: 0, alarme: 0, zeilen: 0, durchgesetzt: 0 };
   }
 }
 
