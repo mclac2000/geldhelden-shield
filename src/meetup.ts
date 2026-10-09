@@ -13,6 +13,7 @@
 
 import { Telegraf, Context } from 'telegraf';
 import { getDatabase } from './db';
+import { checkChannelAnnouncement } from './meetupChannel';
 
 // ═══════════════════════════════════════════════════════════
 // TYPES
@@ -789,6 +790,15 @@ export function startMeetupScheduler(bot: Telegraf): void {
 }
 
 async function checkAndSendAnnouncements(bot: Telegraf): Promise<void> {
+  try {
+    await checkGroupAnnouncements(bot);
+  } finally {
+    // Zusätzlich: großer GeldHelden-Kanal (eigene Fehlerbehandlung, berührt die Gruppen nicht)
+    await checkChannelAnnouncement(bot);
+  }
+}
+
+async function checkGroupAnnouncements(bot: Telegraf): Promise<void> {
   const events = getAllMeetupEvents();
   const now = new Date();
 
