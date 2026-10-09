@@ -16,6 +16,13 @@
  * werden müssten; Umlaute gehen unverändert als UTF-8 raus.
  *
  * Maßgeblich ist die deutsche Zeit (Europe/Berlin).
+ *
+ * Nachtruhe (seit 09.10.2026, Anweisung Marco): Zwischen 22:00 und 07:00
+ * deutscher Zeit geht NIE ein Kanal-Post raus – weder per Scheduler noch per
+ * CLI. Fällt ein regulärer Lauf in dieses Fenster, wird er in
+ * meetup_channel_deferred auf 08:00 verschoben (nur solange das Meetup dann
+ * noch bevorsteht). „Heute/Morgen“ im Text richtet sich nach dem
+ * tatsächlichen Sendetag.
  */
 
 import { Telegraf } from 'telegraf';
@@ -38,6 +45,18 @@ function channelId(): string {
 
 export function initMeetupChannelTable(): void {
   getDatabase().exec(`
+    CREATE TABLE IF NOT EXISTS meetup_channel_deferred (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      event_date TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      due_at INTEGER NOT NULL,
+      deferred_to INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(chat_id, event_date, kind)
+    )
+  `);
+  getDatabase().exec(`
     CREATE TABLE IF NOT EXISTS meetup_channel_posts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       chat_id TEXT NOT NULL,
@@ -53,6 +72,40 @@ export function initMeetupChannelTable(): void {
 }
 
 // ─── Zeit ─────────────────────────────────────────────────
+
+const QUIET_FROM = 22; // ab 22:00
+const QUIET_TO = 7;    // bis 07:00
+const DEFER_HOUR = 8;  // verschoben auf 08:00
+
+/** true zwischen 22:00 und 07:00 deutscher Zeit */
+export function isQuietHours(date: Date): boolean {
+  const h = partsInTz(date, TZ).hour;
+  return h >= QUIET_FROM || h < QUIET_TO;
+}
+
+/** Nächstes 08:00 deutscher Zeit nach einem Zeitpunkt in der Nachtruhe */
+export function nextDeferTime(date: Date): Date {
+  const p = partsInTz(date, TZ);
+  const base = dateInTz(p.year, p.month, p.day, DEFER_HOUR, 0, TZ);
+  if (p.hour >= QUIET_FROM) {
+    const next = new Date(base.getTime() + 36 * 3_600_000); // sicher im Folgetag
+    const q = partsInTz(next, TZ);
+    return dateInTz(q.year, q.month, q.day, DEFER_HOUR, 0, TZ);
+  }
+  return base;
+}
+
+function berlinDayIndex(date: Date): number {
+  const p = partsInTz(date, TZ);
+  return Math.round(Date.UTC(p.year, p.month, p.day) / 86_400_000);
+}
+
+/** 'heute' | 'morgen' | 'am Freitag' – bezogen auf den tatsächlichen Sendezeitpunkt */
+function dayRelation(sendAt: Date, eventDate: Date): { rel: 'heute' | 'morgen' | 'andere'; weekday: string } {
+  const weekday = new Intl.DateTimeFormat('de-DE', { timeZone: TZ, weekday: 'long' }).format(eventDate);
+  const diff = berlinDayIndex(eventDate) - berlinDayIndex(sendAt);
+  return { rel: diff === 0 ? 'heute' : diff === 1 ? 'morgen' : 'andere', weekday };
+}
 
 function partsInTz(date: Date, tz: string) {
   const f = new Intl.DateTimeFormat('en-US', {
@@ -112,6 +165,8 @@ function eventKey(date: Date): string {
 
 function meetupSource(): { link: string; pattern: string } {
   const env = (process.env.MEETUP_CHANNEL_LINK || '').trim();
+  const envPattern = (process.env.MEETUP_CHANNEL_PATTERN || '').trim();
+  if (envPattern) return { link: env || DEFAULT_LINK, pattern: envPattern };
   try {
     const row = getDatabase().prepare(`
       SELECT remo_link, schedule_pattern FROM meetup_events
@@ -126,14 +181,13 @@ function meetupSource(): { link: string; pattern: string } {
 
 // ─── Texte ────────────────────────────────────────────────
 
-export function buildChannelText(wave: ChannelWave, eventDate: Date, link: string): string {
-  const weekday = new Intl.DateTimeFormat('de-DE', { timeZone: TZ, weekday: 'long' }).format(eventDate);
+export function buildChannelText(wave: ChannelWave, eventDate: Date, link: string, sendAt: Date = new Date()): string {
+  const { rel, weekday } = dayRelation(sendAt, eventDate);
   const datum = new Intl.DateTimeFormat('de-DE', { timeZone: TZ, day: 'numeric', month: 'long', year: 'numeric' }).format(eventDate);
   const uhrzeit = new Intl.DateTimeFormat('de-DE', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }).format(eventDate);
-  const heute = wave === 'tag';
-  const ABEND = heute ? 'HEUTE ABEND' : 'MORGEN ABEND';
-  const Abend = heute ? 'Heute Abend' : 'Morgen Abend';
-  const Tag = heute ? 'Heute' : 'Morgen';
+  const ABEND = rel === 'heute' ? 'HEUTE ABEND' : rel === 'morgen' ? 'MORGEN ABEND' : `AM ${weekday.toUpperCase()}`;
+  const Abend = rel === 'heute' ? 'Heute Abend' : rel === 'morgen' ? 'Morgen Abend' : `Am ${weekday}abend`;
+  const zeitZeile = rel === 'andere' ? `${weekday}` : `${rel === 'heute' ? 'Heute' : 'Morgen'}, ${weekday}`;
 
   return [
     `🔥 ${ABEND}, ${uhrzeit} Uhr: Das große GeldHelden Online-Meetup!`,
@@ -152,21 +206,23 @@ export function buildChannelText(wave: ChannelWave, eventDate: Date, link: strin
     '',
     `👉 Hier geht's rein (Link gilt dauerhaft, gleich speichern!): ${link}`,
     '',
-    `⏰ ${Tag}, ${weekday}, ${datum}, um ${uhrzeit} Uhr`,
+    `⏰ ${zeitZeile}, ${datum}, um ${uhrzeit} Uhr`,
     '',
     'Wer ist dabei? Stimm unten ab! 👇',
   ].join('\n');
 }
 
-export function buildChannelPoll(wave: ChannelWave, eventDate: Date): { question: string; options: string[] } {
+export function buildChannelPoll(wave: ChannelWave, eventDate: Date, sendAt: Date = new Date()): { question: string; options: string[] } {
   const uhrzeit = new Intl.DateTimeFormat('de-DE', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }).format(eventDate);
-  const heute = wave === 'tag';
+  const { rel, weekday } = dayRelation(sendAt, eventDate);
+  const wann = rel === 'heute' ? 'heute Abend' : rel === 'morgen' ? 'morgen Abend' : `am ${weekday}abend`;
+  const nicht = rel === 'heute' ? 'Heute nicht' : rel === 'morgen' ? 'Morgen nicht' : 'Diesmal nicht';
   return {
-    question: `Bist du ${heute ? 'heute' : 'morgen'} Abend um ${uhrzeit} Uhr beim Online-Meetup dabei?`,
+    question: `Bist du ${wann} um ${uhrzeit} Uhr beim Online-Meetup dabei?`,
     options: [
       '🙋 Klar, ich bin dabei!',
       '⏰ Ich versuch\'s, komme evtl. später',
-      `👀 ${heute ? 'Heute' : 'Morgen'} nicht, aber beim nächsten Mal`,
+      `👀 ${nicht}, aber beim nächsten Mal`,
       '🆕 Ich war noch nie dabei – wie läuft das ab?',
     ],
   };
@@ -206,8 +262,12 @@ export interface ChannelSendResult {
   errors?: string[];
 }
 
-export async function sendChannelAnnouncement(bot: Telegraf, wave: ChannelWave, eventDate?: Date): Promise<ChannelSendResult> {
+export async function sendChannelAnnouncement(bot: Telegraf, wave: ChannelWave, eventDate?: Date, now: Date = new Date()): Promise<ChannelSendResult> {
   initMeetupChannelTable();
+  if (isQuietHours(now)) {
+    // harte Sperre, gilt auch für den manuellen Aufruf
+    throw new Error('Nachtruhe 22:00–07:00 (deutsche Zeit): kein Kanal-Post');
+  }
   const chatId = channelId();
   const src = meetupSource();
   const date = eventDate || nextChannelMeetupDate(src.pattern);
@@ -220,7 +280,7 @@ export async function sendChannelAnnouncement(bot: Telegraf, wave: ChannelWave, 
     res.skipped!.push('text');
   } else {
     try {
-      const msg = await bot.telegram.sendMessage(chatId, buildChannelText(wave, date, src.link), {
+      const msg = await bot.telegram.sendMessage(chatId, buildChannelText(wave, date, src.link, now), {
         link_preview_options: { is_disabled: false },
       } as any);
       confirm(chatId, key, wave, 'text', msg.message_id);
@@ -238,7 +298,7 @@ export async function sendChannelAnnouncement(bot: Telegraf, wave: ChannelWave, 
   if (!claim(chatId, key, wave, 'poll')) {
     res.skipped!.push('poll');
   } else {
-    const { question, options } = buildChannelPoll(wave, date);
+    const { question, options } = buildChannelPoll(wave, date, now);
     try {
       let msg: any;
       try {
@@ -266,25 +326,99 @@ export async function sendChannelAnnouncement(bot: Telegraf, wave: ChannelWave, 
   return res;
 }
 
+function alreadySent(chatId: string, key: string, wave: ChannelWave): boolean {
+  return !!getDatabase().prepare(`
+    SELECT 1 FROM meetup_channel_posts WHERE chat_id = ? AND event_date = ? AND kind = ? AND part = 'text' AND message_id IS NOT NULL
+  `).get(chatId, key, wave);
+}
+
+function getDeferred(chatId: string, key: string, wave: ChannelWave): number | null {
+  const r = getDatabase().prepare(`
+    SELECT deferred_to FROM meetup_channel_deferred WHERE chat_id = ? AND event_date = ? AND kind = ?
+  `).get(chatId, key, wave) as { deferred_to: number } | undefined;
+  return r ? r.deferred_to : null;
+}
+
+function setDeferred(chatId: string, key: string, wave: ChannelWave, due: Date, to: Date): void {
+  getDatabase().prepare(`
+    INSERT OR IGNORE INTO meetup_channel_deferred (chat_id, event_date, kind, due_at, deferred_to, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(chatId, key, wave, due.getTime(), to.getTime(), Date.now());
+}
+
+const WAVE_OFFSET_H: Record<ChannelWave, number> = { vortag: 24, tag: 1 };
+
+export interface PlannedAction { wave: ChannelWave; action: 'send' | 'defer' | 'drop'; at: Date; event: string; until?: Date; }
+
 /**
- * Vom Gruppen-Scheduler (alle 30 Min) aufgerufen. Gleiche Fenster wie die
- * Gruppen: 23,5–24,5 h vorher → 'vortag', 0,5–1,5 h vorher → 'tag'.
- * Fehler hier dürfen den Gruppenablauf nie stören.
+ * Entscheidet für einen Zeitpunkt, was zu tun ist (ohne zu senden).
+ * Reguläre Fenster wie bei den Gruppen: Fälligkeit ±30 Min
+ * (24 h bzw. 1 h vor dem Meetup). In der Nachtruhe → auf 08:00 verschieben.
  */
-export async function checkChannelAnnouncement(bot: Telegraf, now: Date = new Date()): Promise<void> {
+export function planChannelActions(now: Date, onlyDeferred = false): PlannedAction[] {
+  initMeetupChannelTable();
+  const chatId = channelId();
+  const date = nextChannelMeetupDate(meetupSource().pattern, now);
+  if (!date) return [];
+  const key = eventKey(date);
+  const out: PlannedAction[] = [];
+  for (const wave of ['vortag', 'tag'] as ChannelWave[]) {
+    if (alreadySent(chatId, key, wave)) continue;
+    const deferredTo = getDeferred(chatId, key, wave);
+    if (deferredTo !== null) {
+      if (deferredTo >= date.getTime()) continue; // Verschiebung läge nach dem Meetup → entfällt
+      if (now.getTime() >= deferredTo && !isQuietHours(now)) out.push({ wave, action: 'send', at: now, event: key });
+      continue;
+    }
+    if (onlyDeferred) continue;
+    const due = new Date(date.getTime() - WAVE_OFFSET_H[wave] * 3_600_000);
+    if (Math.abs(now.getTime() - due.getTime()) > 30 * 60_000) continue;
+    if (isQuietHours(now)) {
+      const to = nextDeferTime(now);
+      out.push({ wave, action: to.getTime() < date.getTime() ? 'defer' : 'drop', at: now, event: key, until: to });
+    } else {
+      out.push({ wave, action: 'send', at: now, event: key });
+    }
+  }
+  return out;
+}
+
+let deferredTimer: NodeJS.Timeout | null = null;
+
+async function runChannelCheck(bot: Telegraf, now: Date, onlyDeferred: boolean): Promise<void> {
   if (!isChannelAnnouncementEnabled()) return;
   try {
-    initMeetupChannelTable();
-    const date = nextChannelMeetupDate(meetupSource().pattern, now);
-    if (!date) return;
-    const h = (date.getTime() - now.getTime()) / 3_600_000;
-    let wave: ChannelWave | null = null;
-    if (h >= 23.5 && h <= 24.5) wave = 'vortag';
-    else if (h >= 0.5 && h <= 1.5) wave = 'tag';
-    if (!wave) return;
-    const r = await sendChannelAnnouncement(bot, wave, date);
-    if (r.skipped?.length) console.log(`[MEETUP-KANAL] ${wave} ${r.event}: bereits gesendet – ${r.skipped.join(', ')}`);
+    const chatId = channelId();
+    for (const a of planChannelActions(now, onlyDeferred)) {
+      if (a.action === 'send') {
+        const date = nextChannelMeetupDate(meetupSource().pattern, now)!;
+        const r = await sendChannelAnnouncement(bot, a.wave, date, now);
+        if (r.skipped?.length) console.log(`[MEETUP-KANAL] ${a.wave} ${r.event}: bereits gesendet – ${r.skipped.join(', ')}`);
+      } else {
+        const date = nextChannelMeetupDate(meetupSource().pattern, now)!;
+        const due = new Date(date.getTime() - WAVE_OFFSET_H[a.wave] * 3_600_000);
+        setDeferred(chatId, a.event, a.wave, due, a.until!);
+        console.log(`[MEETUP-KANAL] ${a.wave} ${a.event}: Nachtruhe – ${a.action === 'defer' ? 'verschoben auf ' + a.until!.toISOString() : 'entfällt (08:00 wäre nach dem Meetup)'}`);
+      }
+    }
   } catch (e: any) {
     console.error('[MEETUP-KANAL] Prüfung fehlgeschlagen:', e?.message || e);
   }
+}
+
+/**
+ * Vom Gruppen-Scheduler (alle 30 Min) aufgerufen – gleiche Zeitpunkte wie die
+ * Gruppen. Zusätzlich prüft ein 1-Minuten-Takt nur verschobene Posts, damit
+ * sie pünktlich um 08:00 rausgehen. Fehler hier stören den Gruppenablauf nie.
+ */
+export async function checkChannelAnnouncement(bot: Telegraf, now: Date = new Date()): Promise<void> {
+  if (!deferredTimer) {
+    deferredTimer = setInterval(() => { runChannelCheck(bot, new Date(), true); }, 60_000);
+  }
+  await runChannelCheck(bot, now, false);
+}
+
+/** Für Tests/Trockenlauf: ein Lauf ohne Timer */
+export async function runChannelCheckOnce(bot: Telegraf, now: Date, onlyDeferred = false): Promise<void> {
+  await runChannelCheck(bot, now, onlyDeferred);
 }
