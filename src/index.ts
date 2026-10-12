@@ -1980,6 +1980,18 @@ bot.on('message', async (ctx: Context, next) => {
       console.error('[CopyTrading] Fehler im Handler:', ctErr instanceof Error ? ctErr.message : String(ctErr));
     }
 
+    // 0b. Werbe-Spam in fremder Schrift (12.10.2026, „今日由码徕收洣 @Dl88o").
+    // Überwiegend CJK/Kyrillisch/Arabisch oder verschleierter Text, gesperrt
+    // nur mit Werbeform (Kennung, Link, Telefon, Werbevokabular). Gleiche
+    // Ausnahmen und Stufen wie Copy-Trading — siehe src/fremdschriftGuard.ts.
+    try {
+      const { pruefeFremdschrift } = await import('./fremdschriftGuard');
+      const fs = await pruefeFremdschrift(ctx);
+      if (fs.erledigt) return;
+    } catch (fsErr: unknown) {
+      console.error('[Fremdschrift] Fehler im Handler:', fsErr instanceof Error ? fsErr.message : String(fsErr));
+    }
+
     // 1. Scam-Erkennung (neue robuste Version) - VOR anderer Moderation
     const { moderateScamMessage } = await import('./scamModeration');
     const scamHandled = await moderateScamMessage(ctx);
@@ -2357,6 +2369,11 @@ bot.on('callback_query', async (ctx: Context) => {
         const ctZeilen = vermerkeCopyTradingRuecknahme(pardonId, ctx.from.id);
         if (ctZeilen > 0) {
           console.log(`[CopyTrading][RUECKNAHME] user=${pardonId} zeilen=${ctZeilen} durch admin=${ctx.from.id}`);
+        }
+        const { vermerkeFremdschriftRuecknahme } = await import('./fremdschriftGuard');
+        const fsZeilen = vermerkeFremdschriftRuecknahme(pardonId, ctx.from.id);
+        if (fsZeilen > 0) {
+          console.log(`[Fremdschrift][RUECKNAHME] user=${pardonId} zeilen=${fsZeilen} durch admin=${ctx.from.id}`);
         }
         const res = await unbanUserInAllGroups(pardonId, `Sperre aufgehoben durch Admin ${ctx.from.id}`);
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });

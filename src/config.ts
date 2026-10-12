@@ -75,6 +75,10 @@ export interface Config {
    * Auf false gestellt bleibt es bei Löschen und Vorlegen.
    */
   copyTradingAutoBan: boolean;
+  /** Werbe-Spam in fremder Schrift (CJK/Kyrillisch/Arabisch, Homoglyphen, unsichtbare Zeichen) */
+  fremdschriftCheckEnabled: boolean;
+  /** Fremdschrift-Spam: sperrt bei sicherem Treffer (überwiegend fremd + Werbeform) automatisch. Rückholbar per Knopf. */
+  fremdschriftAutoBan: boolean;
   /**
    * Zeitpunkt des Scharfschaltens (ISO oder ms). In den ersten 48 Stunden
    * danach wird jede Sperre im Admin-Chat als Stichprobe auf die neue Regel
@@ -377,6 +381,8 @@ export function loadConfig(): Config {
   const cryptoBuyAutoBan = parseBoolean(process.env.CRYPTO_BUY_AUTO_BAN, true);
   const copyTradingCheckEnabled = parseBoolean(process.env.COPY_TRADING_CHECK_ENABLED, true);
   const copyTradingAutoBan = parseBoolean(process.env.COPY_TRADING_AUTO_BAN, true);
+  const fremdschriftCheckEnabled = parseBoolean(process.env.FREMDSCHRIFT_CHECK_ENABLED, true);
+  const fremdschriftAutoBan = parseBoolean(process.env.FREMDSCHRIFT_AUTO_BAN, true);
   const armedRaw = (process.env.FIRST_MESSAGE_ARMED_AT || '').trim();
   const armedParsed = armedRaw ? Date.parse(armedRaw) : NaN;
   const firstMessageArmedAt = Number.isFinite(armedParsed) ? armedParsed : null;
@@ -493,6 +499,8 @@ Mehr Infos: {bio_link}`;
     cryptoBuyAutoBan,
     copyTradingCheckEnabled,
     copyTradingAutoBan,
+    fremdschriftCheckEnabled,
+    fremdschriftAutoBan,
     usernameGateEnabled,
     usernameGateGroups,
     usernameGateNotify,
