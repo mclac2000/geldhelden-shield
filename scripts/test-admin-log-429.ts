@@ -26,7 +26,7 @@ async function main(): Promise<void> {
       zeiten.push(Date.now());
       if (zeiten.length <= 2) {
         const e: any = new Error('429: Too Many Requests: retry after 3');
-        e.response = { error_code: 429, parameters: { retry_after: 3 } };
+        e.response = { error_code: 429, parameters: { retry_after: zeiten.length === 1 ? 3 : 5 } };
         throw e;
       }
       zugestellt++;
@@ -40,6 +40,8 @@ async function main(): Promise<void> {
   if (zeiten.length !== 3) fehler.push(`Versuche=${zeiten.length}, erwartet 3`);
   // retry_after 3 s liegt ueber dem 1-s-Takt der Schlange; Schwelle 2500 ms, weil Node-Timer bis 1 ms zu frueh feuern (Wackeltest bei 3000)
   if (zeiten.length >= 2 && zeiten[1] - zeiten[0] < 2500) fehler.push(`retry_after nicht eingehalten (${zeiten[1] - zeiten[0]} ms)`);
+  // 2. Versuch: retry_after 5 + exponentieller Zuschlag 1 s = 6 s; ein fester Wert oder fehlender Zuschlag faellt hier auf
+  if (zeiten.length >= 3 && zeiten[2] - zeiten[1] < 5500) fehler.push(`Zuschlag/retry_after im 2. Versuch fehlt (${zeiten[2] - zeiten[1]} ms, soll ~6000)`);
   if (fehler.length) {
     console.log('ROT: ' + fehler.join('; '));
     process.exit(1);
