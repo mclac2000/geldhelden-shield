@@ -212,7 +212,31 @@ function fehlerMelden(handler: string, error: unknown, ctx?: Context): void {
     return;
   }
   fehlerZuletzt.set(schluessel, Date.now());
-  sendToAdminLogChat(`[Shield][ERROR] ${handler} error: ${text}`, ctx).catch(() => { /* Log-Fehler nicht kritisch */ });
+  // Selbstheilung (20.10.2026): Fehler gehen an den zentralen Melder, der daraus automatisch einen Reparaturauftrag
+  // macht. Der Admin-Chat (Menschen) bekommt sie nur noch, wenn der Melder nicht erreichbar ist.
+  const meldung = `[Shield][ERROR] ${handler} error: ${text}`;
+  anMelder(meldung).then((ok) => {
+    if (!ok) sendToAdminLogChat(meldung, ctx).catch(() => { /* Log-Fehler nicht kritisch */ });
+  });
+}
+
+/** Meldung an den zentralen Melder (melder.geldhelden.org, Core-Bot-Token in MELDER_BOT_TOKEN). true = angenommen. */
+async function anMelder(text: string): Promise<boolean> {
+  const token = (process.env.MELDER_BOT_TOKEN || '').trim();
+  if (!token) return false;
+  try {
+    const r = await fetch(`https://melder.geldhelden.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: '382863507', text, melder_quelle: 'geldhelden-aps/shield', melder_stufe: 'sofort' }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const d: any = await r.json().catch(() => ({}));
+    return r.ok && d?.ok === true;
+  } catch (e: any) {
+    console.warn('[Shield][MELDER] nicht erreichbar:', e?.message);
+    return false;
+  }
 }
 
 const CROSS_BAN_SPERRE_MS = 15 * 60 * 1000;
