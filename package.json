@@ -18,7 +18,8 @@
     "test:cryptobuy": "ts-node scripts/test-crypto-buy.ts",
     "test:otc": "ts-node scripts/test-otc-ankauf.ts",
     "test:fremdschrift": "ts-node scripts/test-fremdschrift.ts",
-    "test": "npm run test:startup && npm run test:identity && npm run test:links && npm run test:profile && npm run test:copytrading && npm run test:cryptobuy && npm run test:otc && npm run test:fremdschrift"
+    "test:adminlog429": "ts-node scripts/test-admin-log-429.ts",
+    "test": "npm run test:startup && npm run test:identity && npm run test:links && npm run test:profile && npm run test:copytrading && npm run test:cryptobuy && npm run test:otc && npm run test:fremdschrift && npm run test:adminlog429"
   },
   "keywords": [
     "telegram",

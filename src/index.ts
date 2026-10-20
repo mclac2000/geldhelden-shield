@@ -188,6 +188,48 @@ process.once('SIGTERM', () => {
   process.exit(0);
 });
 
+// ============================================================================
+// Fehler an den Admin-Chat (20.10.2026)
+// ============================================================================
+// 429 (Too Many Requests) ist kein Fehler für Menschen: Telegram sagt nur "langsamer". Er wird abgefangen und
+// nur geloggt; die Schlangen halten retry_after ein. Andere Fehler gehen weiter in den Admin-Chat, aber je
+// Handler und Text höchstens einmal in 30 Minuten (Ziffern zählen nicht mit), damit ein Fehler, der sich
+// wiederholt, nicht selbst zur Flut wird.
+const FEHLER_SPERRE_MS = 30 * 60 * 1000;
+const fehlerZuletzt = new Map<string, number>();
+
+function fehlerMelden(handler: string, error: unknown, ctx?: Context): void {
+  const e: any = error;
+  const text = error instanceof Error ? error.message : String(error);
+  if (e?.response?.error_code === 429 || /\b429\b|Too Many Requests/i.test(text)) {
+    console.warn(`[Shield][429] ${handler}: ${text} (abgefangen, nicht gemeldet)`);
+    return;
+  }
+  const schluessel = handler + ':' + text.replace(/\d+/g, '#').slice(0, 160);
+  const zuletzt = fehlerZuletzt.get(schluessel) || 0;
+  if (Date.now() - zuletzt < FEHLER_SPERRE_MS) {
+    console.warn(`[Shield][ERROR] ${handler}: ${text} (gleiche Meldung < 30 Min, nicht erneut gemeldet)`);
+    return;
+  }
+  fehlerZuletzt.set(schluessel, Date.now());
+  sendToAdminLogChat(`[Shield][ERROR] ${handler} error: ${text}`, ctx).catch(() => { /* Log-Fehler nicht kritisch */ });
+}
+
+const CROSS_BAN_SPERRE_MS = 15 * 60 * 1000;
+const crossBanZuletzt = new Map<number, number>();
+
+/** true, wenn für diesen User in den letzten 15 Minuten noch kein Cross-Ban lief (und merkt ihn vor). */
+function crossBanFrei(userId: number): boolean {
+  const jetzt = Date.now();
+  const zuletzt = crossBanZuletzt.get(userId) || 0;
+  if (jetzt - zuletzt < CROSS_BAN_SPERRE_MS) {
+    console.log(`[CROSS-BAN][SKIP] user=${userId} schon vor ${Math.round((jetzt - zuletzt) / 1000)}s gebannt`);
+    return false;
+  }
+  crossBanZuletzt.set(userId, jetzt);
+  return true;
+}
+
 // Fehlerbehandlung
 bot.catch((err, ctx) => {
   console.error(`[Error] Unerwarteter Fehler für Update ${ctx.update.update_id}:`, err);
@@ -643,7 +685,7 @@ bot.on('my_chat_member', async (ctx: Context) => {
     }
   } catch (error: any) {
     console.error('[Error] Fehler beim Verarbeiten von my_chat_member:', error.message);
-    await sendToAdminLogChat(`[Shield][ERROR] my_chat_member error: ${error.message}`, ctx);
+    fehlerMelden('my_chat_member', error, ctx);
   }
 });
 
@@ -702,7 +744,7 @@ bot.on('new_chat_members', async (ctx: Context) => {
     }
   } catch (error: any) {
     console.error('[Error] Fehler beim Verarbeiten von new_chat_members:', error.message);
-    await sendToAdminLogChat(`[Shield][ERROR] new_chat_members error: ${error.message}`, ctx);
+    fehlerMelden('new_chat_members', error, ctx);
   }
 });
 
@@ -741,9 +783,13 @@ bot.on('chat_member', async (ctx: Context) => {
     }
 
     // Cross-Ban: Wenn ein Admin in einer Gruppe jemanden bannt → sofort in ALLEN Gruppen bannen
-    if (newStatus === 'kicked' && oldStatus !== 'kicked') {
+    // 20.10.2026: Nur wenn ein MENSCH gebannt hat. Die eigenen Bans des Bots (banUserGlobally) erzeugen in jeder
+    // Gruppe wieder ein chat_member "kicked" -- vorher löste jedes davon einen neuen Cross-Ban über alle 56 Gruppen
+    // samt Admin-Meldung aus (168 Cross-Bans in 72 h, danach 429 im Admin-Chat). Zusätzlich je User nur einmal in 15 Min.
+    if (newStatus === 'kicked' && oldStatus !== 'kicked' && !user.is_bot) {
       const bannedUser = (member as any).user;
-      if (bannedUser && !bannedUser.is_bot && !isAdmin(bannedUser.id) && !isTeamMember(bannedUser.id)) {
+      if (bannedUser && !bannedUser.is_bot && !isAdmin(bannedUser.id) && !isTeamMember(bannedUser.id)
+          && crossBanFrei(bannedUser.id)) {
         const chatTitle = 'title' in chat ? chat.title : chatId;
         console.log(`[CROSS-BAN] User ${bannedUser.id} wurde in "${chatTitle}" gebannt → Cross-Ban in alle Gruppen`);
         const { banUserGlobally } = await import('./telegram');
@@ -763,11 +809,7 @@ bot.on('chat_member', async (ctx: Context) => {
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error('[ERROR][JOIN_HANDLER] chat_member:', errorMessage);
-    try {
-      await sendToAdminLogChat(`[Shield][ERROR] chat_member error: ${errorMessage}`, ctx);
-    } catch (logError) {
-      // Ignoriere Log-Fehler - nicht kritisch
-    }
+    fehlerMelden('chat_member', error, ctx);
     // Kein weiterwerfen - Event-Handler darf Bot nicht stoppen
   }
 });

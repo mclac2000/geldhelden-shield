@@ -26,3 +26,5 @@ data/
 # IDE
 .idea/
 .vscode/
+
+graphify-out/

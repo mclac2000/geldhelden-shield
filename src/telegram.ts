@@ -101,26 +101,45 @@ const actionQueue = new ActionQueue(350);
 
 // ============================================================================
 // Rate-Limit-Queue für Admin-Logs (max 1/Sekunde, Retry bei 429)
-// ============================================================================
+//
+// 20.10.2026: Die alte Fassung hat 429 nie wiederholt. Der Wrapper fing den
+// Fehler selbst und gab ihn als Ablehnung an den Aufrufer zurück; der
+// chat_member-Handler schickte daraufhin "[Shield][ERROR] chat_member error:
+// 429 ..." erneut an den Admin-Chat, der wieder 429 lieferte -- eine Meldung
+// je Sekunde, bis die Sperre ablief (gemessen 17.10. 23:24 und 19.10. 23:xx).
+// Jetzt: retry_after wird eingehalten (die ganze Schlange wartet), bei
+// wiederholtem 429 mit exponentiell wachsendem Zuschlag, nach MAX_VERSUCHE wird
+// die Nachricht verworfen (nur Log). Der Aufrufer bekommt für 429 nie einen
+// Fehler -- eine Log-Nachricht ist nie wichtiger als der Handler, der sie sendet.
+
+const MAX_VERSUCHE = 6;
+const MAX_WARTEN_S = 600;
+
+function ist429(error: any): boolean {
+  return error?.response?.error_code === 429 || String(error?.message || '').includes('429');
+}
+
+function wartezeitS(error: any, versuch: number): number {
+  const retryAfter = Number(error?.response?.parameters?.retry_after) || 1;
+  // Telegram verlangt mindestens retry_after; jeder weitere 429 verdoppelt den Zuschlag.
+  return Math.min(MAX_WARTEN_S, retryAfter + Math.pow(2, versuch - 1) - 1);
+}
 
 class AdminLogQueue {
-  private queue: Array<() => Promise<void>> = [];
+  private queue: Array<{ action: () => Promise<void>; resolve: () => void; reject: (e: any) => void; versuche: number }> = [];
   private processing = false;
   private readonly delayMs: number = 1000; // 1 Sekunde
   private lastSentAt: number = 0;
 
   async enqueue(action: () => Promise<void>): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.queue.push(async () => {
-        try {
-          await action();
-          resolve();
-        } catch (error) {
-          reject(error);
-        }
-      });
+      this.queue.push({ action, resolve, reject, versuche: 0 });
       this.processQueue();
     });
+  }
+
+  get laenge(): number {
+    return this.queue.length;
   }
 
   private async processQueue(): Promise<void> {
@@ -131,31 +150,35 @@ class AdminLogQueue {
     this.processing = true;
 
     while (this.queue.length > 0) {
-      const action = this.queue.shift();
-      if (action) {
-        try {
-          // Warte bis 1 Sekunde seit letztem Send vergangen ist
-          const now = Date.now();
-          const timeSinceLastSend = now - this.lastSentAt;
-          if (timeSinceLastSend < this.delayMs) {
-            await new Promise(resolve => setTimeout(resolve, this.delayMs - timeSinceLastSend));
+      const eintrag = this.queue[0];
+      // Warte bis 1 Sekunde seit letztem Send vergangen ist
+      const timeSinceLastSend = Date.now() - this.lastSentAt;
+      if (timeSinceLastSend < this.delayMs) {
+        await new Promise(resolve => setTimeout(resolve, this.delayMs - timeSinceLastSend));
+      }
+      try {
+        await eintrag.action();
+        this.lastSentAt = Date.now();
+        this.queue.shift();
+        eintrag.resolve();
+      } catch (error: any) {
+        this.lastSentAt = Date.now();
+        if (ist429(error)) {
+          eintrag.versuche++;
+          if (eintrag.versuche >= MAX_VERSUCHE) {
+            console.warn(`[AdminLogQueue] 429 nach ${eintrag.versuche} Versuchen, Nachricht verworfen (Schlange: ${this.queue.length - 1})`);
+            this.queue.shift();
+            eintrag.resolve();
+            continue;
           }
-          
-          await action();
-          this.lastSentAt = Date.now();
-        } catch (error: any) {
-          // Retry bei 429 (Rate Limit)
-          if (error.response?.error_code === 429) {
-            const retryAfter = error.response?.parameters?.retry_after || 1;
-            console.log(`[AdminLogQueue] Rate-Limit, warte ${retryAfter}s...`);
-            await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-            
-            // Re-queue die Aktion
-            this.queue.unshift(action);
-          } else {
-            // Andere Fehler: nur loggen, nicht re-queue
-            console.error('[AdminLogQueue] Fehler beim Senden:', error.message);
-          }
+          const s = wartezeitS(error, eintrag.versuche);
+          console.warn(`[AdminLogQueue] Rate-Limit, warte ${s}s (Versuch ${eintrag.versuche}, Schlange: ${this.queue.length})`);
+          await new Promise(resolve => setTimeout(resolve, s * 1000));
+          // bleibt vorn in der Schlange und wird wiederholt
+        } else {
+          this.queue.shift();
+          console.error('[AdminLogQueue] Fehler beim Senden:', error.message);
+          eintrag.reject(error);
         }
       }
     }
@@ -252,6 +275,19 @@ function formatUserInfo(userId: number, username?: string, firstName?: string, l
     : `<a href="tg://user?id=${userId}">${fullName}</a>`;
 }
 
+const ADMIN_STATUS_CACHE_MS = 10 * 60 * 1000;
+const adminStatusCache = new Map<string, { isAdmin: boolean; status: string; zeit: number }>();
+let gemerkteBotId: number | null = null;
+
+/** Die eigene Bot-ID ändert sich nie -- getMe nur einmal je Prozess. */
+export async function eigeneBotId(telegram?: any): Promise<number> {
+  if (gemerkteBotId === null) {
+    const me = await (telegram || getBotTelegram()).getMe();
+    gemerkteBotId = me.id;
+  }
+  return gemerkteBotId as number;
+}
+
 /**
  * Prüft ob der Bot Admin oder Creator in einer Gruppe ist
  * Returns: { isAdmin: boolean, status: string | null, error: string | null }
@@ -261,22 +297,37 @@ export async function isBotAdminInGroup(
   telegram?: any
 ): Promise<{ isAdmin: boolean; status: string | null; error: string | null }> {
   const telegramInstance = telegram || getBotTelegram();
-  
+
+  // 20.10.2026: Ein globaler Ban fragte je Gruppe getMe + getChatMember ab (56 Gruppen = 112 Aufrufe),
+  // bei jeder Wiederholung erneut. Der eigene Admin-Status ändert sich selten -> 10 Minuten Cache.
+  const gemerkt = adminStatusCache.get(chatId);
+  if (gemerkt && Date.now() - gemerkt.zeit < ADMIN_STATUS_CACHE_MS) {
+    return { isAdmin: gemerkt.isAdmin, status: gemerkt.status, error: null };
+  }
+
+  for (let versuch = 1; ; versuch++) {
   try {
-    // Hole Bot-Info
-    const me = await telegramInstance.getMe();
-    const botId = me.id;
-    
+    const botId = await eigeneBotId(telegramInstance);
+
     // Prüfe Bot-Status in der Gruppe
     const member = await telegramInstance.getChatMember(chatId, botId);
     const status = String(member.status || '');
-    
+
     const isAdminOrCreator = status === 'administrator' || status === 'creator';
-    
+    adminStatusCache.set(chatId, { isAdmin: isAdminOrCreator, status, zeit: Date.now() });
+
     return { isAdmin: isAdminOrCreator, status, error: null };
   } catch (error: any) {
     const errorCode = error.response?.error_code;
     const errorDescription = error.response?.description || error.message;
+
+    // 429: retry_after einhalten und wiederholen (exponentieller Zuschlag), statt die Gruppe als "nicht Admin" zu überspringen
+    if (errorCode === 429 && versuch < 4) {
+      const s = wartezeitS(error, versuch);
+      console.warn(`[MANAGED] getChatMember 429 in ${chatId}, warte ${s}s (Versuch ${versuch})`);
+      await new Promise(resolve => setTimeout(resolve, s * 1000));
+      continue;
+    }
     
     // USER_NOT_PARTICIPANT oder ähnliche Fehler bedeuten, dass Bot nicht in der Gruppe ist
     if (errorCode === 400 || errorCode === 403) {
@@ -285,6 +336,7 @@ export async function isBotAdminInGroup(
     
     // Bei anderen Fehlern vorsichtshalber als nicht-Admin behandeln
     return { isAdmin: false, status: null, error: errorDescription };
+  }
   }
 }
 
