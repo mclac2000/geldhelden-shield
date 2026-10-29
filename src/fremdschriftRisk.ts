@@ -117,6 +117,8 @@ const WERBUNG_CJK = [
   '微信', '承兑', '换汇', '精聊', '引流', '推广', '广告', '接单', '收款', '洗',
   '秒到', '高额', '保底', '月入', '躺赚', '包赔', '入金', '出金', '盘口', '下注',
   '稳赚', '投资', '赚', '项目', '群发', '群演', '进群',
+  // 29.10.2026: „天赐代发 … Telegram 社群推广引流 … TG代发广告" — Werbung für Spam-Versand
+  '代发', '发广告', '社群', '拉人', '刷粉', '买粉', '拉群', '频道', '机器人', '曝光',
 ];
 
 const WERBUNG_KYR = [
@@ -254,6 +256,34 @@ export function bewerteFremdschrift(rohtext: string, opt: BewertungsOptionen = {
     kennungen: [...kennungen], links, telefon, werbewoerter,
     eingesessen, warnkontext, punkte, signale, belege,
   };
+}
+
+export interface NamensBefund {
+  spam: boolean;
+  belege: string[];
+}
+
+/**
+ * Anzeigename (oder Kanalname) als Spam-Werbung erkennen.
+ *
+ * 29.10.2026: Absender „天赐代发👉@xxin7👈Direct🔺ad…" — der Name IST die Anzeige.
+ * Zählt nur, wenn der Name CJK-Zeichen (mind. 2) UND eine Weiterleitung nach draußen
+ * enthält (@-Kennung, Link, Telefonnummer) oder CJK-Werbevokabular. Ein chinesischer
+ * Name allein (真实成员) oder ein Name mit @ ohne CJK trifft nie.
+ */
+export function bewerteAnzeigename(name: string): NamensBefund {
+  const roh = (name || '').normalize('NFKC').replace(new RegExp(UNSICHTBAR_KLASSE, 'g'), '');
+  const belege: string[] = [];
+  const cjk = (roh.match(new RegExp(RE_CJK.source, 'gu')) || []).length;
+  if (cjk < 2) return { spam: false, belege };
+  const ohneLinks = roh.replace(RE_LINK, ' ');
+  const kennungen = ohneLinks.replace(RE_EMAIL, ' ').match(RE_KENNUNG) || [];
+  const links = (roh.match(RE_LINK) || []).length;
+  const wort = WERBUNG_CJK.filter(w => roh.toLowerCase().includes(w));
+  if (kennungen.length) belege.push(`Name enthält Kennung: ${kennungen.slice(0, 2).join(', ')}`);
+  if (links) belege.push('Name enthält Link');
+  if (wort.length) belege.push(`Name enthält Werbevokabular: ${wort.slice(0, 4).join(', ')}`);
+  return { spam: belege.length > 0, belege: belege.length ? [`Anzeigename „${roh.slice(0, 60)}"`, ...belege] : belege };
 }
 
 export function schriftName(s: Schrift | null): string {

@@ -240,6 +240,7 @@ export function generateBriefingText(stats: DailyStats): string {
   lines.push(`• Restricts: ${stats.totalRestricts}`);
   lines.push(`• Bans: ${stats.totalBans}`);
   lines.push(`• Entsperrt: ${stats.totalUnrestricts}`);
+  try { for (const z of require('./fremdschriftGuard').fremdschriftTagesZeilen()) lines.push(z); } catch { /* optional */ }
   lines.push('');
 
   // Anomalien

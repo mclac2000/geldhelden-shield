@@ -5,7 +5,7 @@
  * Aufruf:  npx ts-node scripts/test-fremdschrift.ts
  */
 
-import { bewerteFremdschrift, entscheideFremdschrift, FremdschriftMassnahme } from '../src/fremdschriftRisk';
+import { bewerteFremdschrift, bewerteAnzeigename, entscheideFremdschrift, FremdschriftMassnahme } from '../src/fremdschriftRisk';
 import type { Absender } from '../src/copyTradingRisk';
 
 const FREMD: Absender = { nachrichtenInGruppe: 1, kontoAlterTage: null };
@@ -30,6 +30,9 @@ export const MUSS_GREIFEN: Fall[] = [
   { was: 'V10 — Zierschrift + Kennung', text: '𝐄𝐚𝐫𝐧 𝟓𝟎𝟎$ 𝐝𝐚𝐢𝐥𝐲 𝐰𝐢𝐭𝐡 𝐦𝐞 👉 @CryptoQueenX', absender: UNBEKANNT, erwartet: 'sperren' },
   { was: 'V11 — Mischung CJK + Kyrillisch + Emojis + Kennung', text: '💰💰 今日爆单 заработок 菠菜 💰 @mix_bet99', absender: UNBEKANNT, erwartet: 'sperren' },
   { was: 'V12 — Kyrillisch nur mit Kennung (Tiflis-Fall: löschen, nicht sperren)', text: 'Привет всем, кто ищет квартиру в Тбилиси, пишите @ivan_tbs', absender: FREMD, erwartet: 'loeschen' },
+  { was: 'V14 — 29.10.2026 Versand-Werbung (DAS ORIGINAL)', text: '天赐代发团队 🩵\n🚀 Telegram 社群推广引流 🚀\n👑天赐团队 Telegram 社群24小时自动推广引流服务…\n💎TG代发广告…\n⚠️极速代发…\n速度联系 @xxin7', absender: UNBEKANNT, erwartet: 'sperren' },
+  { was: 'V15 — Versand-Werbung ohne Kennung, mit Werbewort', text: '专业TG代发广告 群发推广 社群引流 24小时在线 欢迎咨询', absender: FREMD, erwartet: 'sperren' },
+  { was: 'V16 — Versand-Werbung von Kanal/Scheinabsender (Mitgliederzahl 0)', text: '天赐代发团队 Telegram 社群推广引流 速度联系 @xxin7', absender: { nachrichtenInGruppe: 0, kontoAlterTage: null }, erwartet: 'sperren' },
   { was: 'V13 — reines Chinesisch ohne Werbeform, neues Konto', text: '大家好今天天气很好我们一起去吃饭吧', absender: FREMD, erwartet: 'loeschen' },
 ];
 
@@ -44,6 +47,9 @@ export const DARF_NICHT_GREIFEN: Fall[] = [
   { was: 'Deutsch mit Georgisch (Tiflis)', text: 'Das Café heißt კაფე ლიტერა und liegt direkt an der Altstadt. Kaffee ist super, WLAN auch.', absender: FREMD, erwartet: 'keine' },
   { was: 'Deutsch: Warnung zitiert den Spam', text: 'Achtung, hier kam gerade Spam rein: "今日由码徕收洣 @Dl88o" – bitte nicht anschreiben, das ist Betrug!', absender: FREMD, erwartet: ['keine', 'melden'] },
   { was: 'Deutsch mit Telefonnummer', text: 'Wer Hilfe beim Umzug nach Portugal braucht, mein Anwalt dort ist gut erreichbar unter +351 912 345 678.', absender: FREMD, erwartet: 'keine' },
+  { was: 'Deutsch mit Emojis, Link und Kennung', text: '🚀 Neues Video ist online 👉 https://geldhelden.org/video – Fragen gern an @GeldheldenTeam 🙌💙', absender: FREMD, erwartet: 'keine' },
+  { was: 'Deutsch über Werbung und Reichweite', text: 'Wir überlegen, wie man mit Telegram-Gruppen mehr Reichweite bekommt – Werbung, Kontakt und Anzeigen sind aber nicht erlaubt, oder?', absender: FREMD, erwartet: 'keine' },
+  { was: 'Deutsch mit Hinweis auf chinesische Werbung', text: 'Hab gerade 天赐 in einer anderen Gruppe gesehen, nervt total, kontaktiert den Admin bitte.', absender: FREMD, erwartet: ['keine', 'melden'] },
   { was: 'Kurz: nur Emojis', text: '👍👍🔥', absender: UNBEKANNT, erwartet: 'keine' },
   { was: 'Eingesessenes Mitglied schreibt Russisch mit Kennung', text: 'Ребята, кто в Тбилиси, пишите @andrej_gh — встречаемся в субботу в кафе, бесплатно', absender: MITGLIED, erwartet: ['keine', 'melden'] },
 ];
@@ -63,10 +69,35 @@ function pruefe(faelle: Fall[], titel: string): string[] {
   return fehler;
 }
 
+export const NAMEN_SPAM: Array<[string, string]> = [
+  ['Originalname 29.10.', '天赐代发👉@xxin7👈Direct🔺ad'],
+  ['Name mit Kennung', '推广引流 @tg_ad_88'],
+  ['Kanalname mit Link', '天赐团队 t.me/xxin7'],
+  ['Name nur Werbewort', '专业代发广告'],
+];
+export const NAMEN_OK: Array<[string, string]> = [
+  ['Deutscher Name', 'Marco Müller'],
+  ['Name mit Emoji', 'Anna 🌴 Bangkok'],
+  ['Name mit Kennung ohne CJK', 'Peter | @peter_gh'],
+  ['Chinesischer echter Name', '李小明'],
+  ['Chinesischer Name mit Latein', '王芳 Fang Wang'],
+  ['Japanischer Name', '田中 太郎'],
+  ['Russischer Name', 'Иван Петров'],
+];
+
+function pruefeNamen(): string[] {
+  console.log(`\n${'='.repeat(78)}\n3. ANZEIGENAMEN\n${'='.repeat(78)}`);
+  const fehler: string[] = [];
+  for (const [was, n] of NAMEN_SPAM) { const r = bewerteAnzeigename(n); console.log(`${r.spam ? '✅' : '❌'} SPAM  ${was}`); if (!r.spam) fehler.push(`Name ${was}: nicht erkannt`); }
+  for (const [was, n] of NAMEN_OK) { const r = bewerteAnzeigename(n); console.log(`${!r.spam ? '✅' : '❌'} OK    ${was}`); if (r.spam) fehler.push(`Name ${was}: Fehlalarm`); }
+  return fehler;
+}
+
 if (require.main === module) {
   const f1 = pruefe(MUSS_GREIFEN, '1. MUSS GREIFEN — Original + Varianten');
   const f2 = pruefe(DARF_NICHT_GREIFEN, '2. DARF NICHT GREIFEN — echte deutsche Nachrichten');
-  const fehler = [...f1, ...f2];
+  const f3 = pruefeNamen();
+  const fehler = [...f1, ...f2, ...f3];
   console.log(`\n${'='.repeat(78)}`);
   console.log(`Erkannt:       ${MUSS_GREIFEN.length - f1.length}/${MUSS_GREIFEN.length}`);
   console.log(`Durchgelassen: ${DARF_NICHT_GREIFEN.length - f2.length}/${DARF_NICHT_GREIFEN.length}`);

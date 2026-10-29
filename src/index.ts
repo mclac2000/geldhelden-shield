@@ -400,6 +400,14 @@ async function handleJoinEvent(
     return; // Skip rest of processing - Team-Mitglieder werden nicht gebannt/restricted
   }
 
+  // SPAM-NAME: Werbe-Anzeige im Namen (fremde Schrift + @-Kennung/Werbewort) -> sofort sperren
+  try {
+    const { pruefeBeitrittsname } = await import('./fremdschriftGuard');
+    if (await pruefeBeitrittsname(ctx, userId, chatId, title, userInfo)) return;
+  } catch (nameErr: unknown) {
+    console.error('[Fremdschrift] Beitrittsname:', nameErr instanceof Error ? nameErr.message : String(nameErr));
+  }
+
       // AUTO-REJOIN-BLOCK: Prüfe VOR jeglicher anderer Join-Logik
   if (isBlacklisted(userId)) {
         const adminCheck = await isUserAdminOrCreatorInGroup(chatId, userId, ctx.telegram);

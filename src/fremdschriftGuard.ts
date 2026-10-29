@@ -19,7 +19,7 @@
 
 import { Context } from 'telegraf';
 import { config } from './config';
-import { bewerteFremdschrift, entscheideFremdschrift, FremdschriftMassnahme, schriftName } from './fremdschriftRisk';
+import { bewerteFremdschrift, bewerteAnzeigename, entscheideFremdschrift, FremdschriftMassnahme, schriftName } from './fremdschriftRisk';
 import type { Absender } from './copyTradingRisk';
 
 export interface FremdschriftErgebnis {
@@ -110,6 +110,62 @@ export function vermerkeFremdschriftRuecknahme(userId: number, durchWen: number)
   }
 }
 
+/**
+ * Beitritt mit Spam-Namen („天赐代发👉@xxin7👈Direct"): sofort in allen Gruppen sperren.
+ * Gibt true zurück, wenn gesperrt wurde. Admins/Team/Eingesessene sind vom Aufrufer bzw. hier ausgenommen.
+ */
+export async function pruefeBeitrittsname(
+  ctx: Context, userId: number, chatId: string, chatTitel: string,
+  name: { username?: string; firstName?: string; lastName?: string },
+): Promise<boolean> {
+  try {
+    if (!config.fremdschriftCheckEnabled) return false;
+    const anzeige = `${name.firstName || ''} ${name.lastName || ''}`.trim();
+    const nb = bewerteAnzeigename(anzeige);
+    if (!nb.spam) return false;
+    const { isAdmin } = await import('./admin');
+    if (isAdmin(userId) || config.protectedUserIds.includes(userId)) return false;
+    const { isUserAdminOrCreatorInGroup } = await import('./telegram');
+    if ((await isUserAdminOrCreatorInGroup(chatId, userId, ctx.telegram)).isAdmin) return false;
+    const { isPanicMode } = await import('./config');
+    const panik = isPanicMode();
+    let gesperrt = false;
+    let gruppen = 0;
+    if (config.fremdschriftAutoBan && !panik) {
+      const { banUserGlobally } = await import('./telegram');
+      const r = await banUserGlobally(userId, 'Fremdschrift-Spam: Spam-Name beim Beitritt');
+      gesperrt = !r.skipped;
+      gruppen = r.groups ?? 0;
+    }
+    protokolliere({
+      userId, chatId, chatTitel, messageId: null, username: name.username ?? null, anzeigename: anzeige,
+      schrift: 'cjk', anteilFremd: 0, punkte: 50, eingesessen: false, nachrichtenInGruppe: 0,
+      massnahme: 'sperren', grund: 'Spam-Name beim Beitritt', signale: ['name_spam', 'beitritt'], belege: nb.belege,
+      text: '', geloescht: false, gesperrt, gesperrtInGruppen: gruppen,
+    });
+    console.log(`[Fremdschrift][BEITRITT] user=${userId} chat=${chatId} name=${anzeige.slice(0, 50)} gesperrt=${gesperrt ? gruppen : 'nein'}${panik ? ' (PANIK)' : ''}`);
+    return gesperrt;
+  } catch (e: unknown) {
+    console.error('[Fremdschrift] Beitrittsprüfung Fehler:', e instanceof Error ? e.message : String(e));
+    return false;
+  }
+}
+
+/** Zeile(n) für den Tagesbericht: erledigte Fremdschrift-Sperren der letzten 24 h. */
+export function fremdschriftTagesZeilen(): string[] {
+  try {
+    const seit = Date.now() - 24 * 3600 * 1000;
+    const r: any = tabelle().prepare(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(geloescht),0) AS g, COALESCE(SUM(gesperrt),0) AS b
+         FROM fremdschrift_events WHERE created_at >= ? AND massnahme IN ('loeschen','sperren')`
+    ).get(seit);
+    if (!r || !r.n) return ['• Werbe-Spam (fremde Schrift): keiner'];
+    return [`• Werbe-Spam (fremde Schrift): ${r.n} erkannt, ${r.g} gelöscht, ${r.b} gesperrt`];
+  } catch {
+    return [];
+  }
+}
+
 export function getFremdschriftEvents(limit = 25): any[] {
   try {
     return tabelle().prepare('SELECT * FROM fremdschrift_events ORDER BY created_at DESC LIMIT ?').all(limit);
@@ -120,22 +176,92 @@ export function getFremdschriftEvents(limit = 25): any[] {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Telegram-Scheinabsender für Nachrichten „im Namen eines Kanals/der Gruppe":
+ * 777000 (automatische Weiterleitung), 136817688 (Channel_Bot), 1087968824 (anonymer Admin).
+ * 29.10.2026: 777000 stand in team_members — jede Nachricht mit diesem Absender galt als Team
+ * und ging an ALLEN Prüfungen vorbei. Chinesischer Werbe-Spam kam so ungehindert in die
+ * Hauptgruppe. Für diese Absender zählt nicht der Scheinabsender, sondern der Kanal dahinter.
+ */
+const SCHEINABSENDER = new Set<number>([777000, 136817688, 1087968824]);
+
+/** Eigene Kanäle, die in den Gruppen schreiben dürfen (Hauptkanal). Weitere per Umgebung EIGENE_KANAL_IDS. */
+function eigeneKanaele(): Set<string> {
+  const s = new Set<string>(['-1001848781746']);
+  for (const x of (process.env.EIGENE_KANAL_IDS || '').split(',')) if (x.trim()) s.add(x.trim());
+  return s;
+}
+
+const verknuepftCache = new Map<string, { id: string | null; bis: number }>();
+async function verknuepfterKanal(ctx: Context, chatId: string): Promise<string | null> {
+  const c = verknuepftCache.get(chatId);
+  if (c && c.bis > Date.now()) return c.id;
+  let id: string | null = null;
+  try {
+    const info: any = await ctx.telegram.getChat(chatId);
+    id = info?.linked_chat_id ? String(info.linked_chat_id) : null;
+  } catch { /* unbekannt = kein verknüpfter Kanal */ }
+  verknuepftCache.set(chatId, { id, bis: Date.now() + 60 * 60 * 1000 });
+  return id;
+}
+
+/** Sperrt einen Kanal als Absender in allen verwalteten Gruppen. */
+export async function sperreKanalGlobal(telegram: any, kanalId: number): Promise<number> {
+  const { getManagedGroups } = await import('./db');
+  let n = 0;
+  for (const g of getManagedGroups()) {
+    try {
+      await telegram.callApi('banChatSenderChat', { chat_id: String(g.chatId), sender_chat_id: kanalId });
+      n++;
+    } catch (e: any) {
+      const code = e?.response?.error_code;
+      if (code === 429) {
+        const warte = (e.response?.parameters?.retry_after ?? 3) + 1;
+        await new Promise(r => setTimeout(r, warte * 1000));
+        try { await telegram.callApi('banChatSenderChat', { chat_id: String(g.chatId), sender_chat_id: kanalId }); n++; } catch { /* nächste Gruppe */ }
+      }
+      // 400/403 (Bot dort kein Admin, Kanal nicht dort aktiv): überspringen
+    }
+  }
+  return n;
+}
+
 export async function pruefeFremdschrift(ctx: Context): Promise<FremdschriftErgebnis> {
   try {
     if (!config.fremdschriftCheckEnabled) return KEINE;
 
     const msg: any = ctx.message || ('edited_message' in (ctx.update as any) ? (ctx.update as any).edited_message : null);
-    if (!msg || !ctx.from || ctx.from.is_bot) return KEINE;
+    if (!msg || !ctx.from) return KEINE;
     const chat = ctx.chat;
     if (!chat || (chat.type !== 'group' && chat.type !== 'supergroup')) return KEINE;
+
+    // Nachricht im Namen eines Kanals? Dann entscheidet der Kanal, nicht der Scheinabsender.
+    const senderChat: any = msg.sender_chat && msg.sender_chat.id !== chat.id ? msg.sender_chat : null;
+    const scheinAbsender = SCHEINABSENDER.has(ctx.from.id);
+    if (ctx.from.is_bot && !scheinAbsender) return KEINE;
+    if (msg.sender_chat && msg.sender_chat.id === chat.id) return KEINE; // anonymer Admin der Gruppe selbst
+    if (senderChat) {
+      const eigene = eigeneKanaele();
+      if (eigene.has(String(senderChat.id)) || String(senderChat.id) === await verknuepfterKanal(ctx, String(chat.id))) return KEINE;
+    } else if (scheinAbsender && ctx.from.id !== 777000) {
+      return KEINE; // anonymer Admin ohne sender_chat: nichts zu prüfen
+    }
+    const kanalTitel: string = senderChat ? `${senderChat.title || ''} ${senderChat.username ? '@' + senderChat.username : ''}`.trim() : '';
+    if (senderChat || scheinAbsender) {
+      console.log(`[Fremdschrift][KANAL] from=${ctx.from.id} sender_chat=${senderChat?.id ?? '-'} titel=${kanalTitel.slice(0, 60)} chat=${chat.id} msg=${msg.message_id} thread=${msg.message_thread_id ?? '-'} fwd=${msg.forward_origin?.type ?? '-'}`);
+    }
 
     // Text erst prüfen — billig, und die allermeisten Nachrichten enden hier.
     const ausBildunterschrift = !msg.text && typeof msg.caption === 'string';
     const text: string = msg.text || msg.caption || '';
-    if (!text.trim()) return KEINE;
+
+    // Anzeigename: bei Kanälen der Kanalname, sonst Vor-/Nachname. Der Name ist oft die eigentliche Anzeige.
+    const anzeigeText = senderChat ? kanalTitel : `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
+    const nameBefund = bewerteAnzeigename(anzeigeText);
+    if (!text.trim() && !nameBefund.spam) return KEINE;
 
     // Schnellfilter: ohne Zielschrift, ohne Verschleierungszeichen kein Befund.
-    if (!/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Cyrillic}\p{Script=Arabic}\p{Script=Greek}­​-‏‪-‮⁠-⁤﻿\u{1D400}-\u{1D7FF}Ａ-ｚ]/u.test(text)) {
+    if (!nameBefund.spam && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Cyrillic}\p{Script=Arabic}\p{Script=Greek}­​-‏‪-‮⁠-⁤﻿\u{1D400}-\u{1D7FF}Ａ-ｚ]/u.test(text)) {
       return KEINE;
     }
 
@@ -146,16 +272,19 @@ export async function pruefeFremdschrift(ctx: Context): Promise<FremdschriftErge
     if (getGroup(chatId)?.status !== 1) return KEINE;
 
     // Ausnahmen — dieselben wie überall, und vor allem anderen.
+    // NICHT für Kanal-Nachrichten und Scheinabsender: dort sagt die Kennung (z. B. 777000 im Team-Verzeichnis) nichts über den Verfasser.
     const userId = ctx.from.id;
-    if (config.protectedUserIds.includes(userId)) return KEINE;
-    const { isAdmin } = await import('./admin');
-    if (isAdmin(userId)) return KEINE;
-    const { isTeamMember, isIdentityExempt } = await import('./db');
-    if (isTeamMember(userId) || isIdentityExempt(userId)) return KEINE;
-    try {
-      const { isUserAdminOrCreatorInGroup } = await import('./telegram');
-      if ((await isUserAdminOrCreatorInGroup(chatId, userId, ctx.telegram)).isAdmin) return KEINE;
-    } catch { /* im Zweifel weiterprüfen */ }
+    if (!senderChat && !scheinAbsender) {
+      if (config.protectedUserIds.includes(userId)) return KEINE;
+      const { isAdmin } = await import('./admin');
+      if (isAdmin(userId)) return KEINE;
+      const { isTeamMember, isIdentityExempt } = await import('./db');
+      if (isTeamMember(userId) || isIdentityExempt(userId)) return KEINE;
+      try {
+        const { isUserAdminOrCreatorInGroup } = await import('./telegram');
+        if ((await isUserAdminOrCreatorInGroup(chatId, userId, ctx.telegram)).isAdmin) return KEINE;
+      } catch { /* im Zweifel weiterprüfen */ }
+    }
 
     // Versteckte Links und Erwähnungen ohne @ stecken in den Entities.
     const entities: any[] = (ausBildunterschrift ? msg.caption_entities : msg.entities) || [];
@@ -165,14 +294,23 @@ export async function pruefeFremdschrift(ctx: Context): Promise<FremdschriftErge
       .map(e => (e.user.username ? '@' + e.user.username : `id:${e.user.id}`));
 
     const { leseNachrichtenStand } = await import('./db');
-    const absender: Absender = { nachrichtenInGruppe: leseNachrichtenStand(userId, chatId), kontoAlterTage: null };
+    // Kanäle und Scheinabsender haben keinen Verlauf als „eingesessenes Mitglied".
+    const absender: Absender = { nachrichtenInGruppe: (senderChat || scheinAbsender) ? 0 : leseNachrichtenStand(userId, chatId), kontoAlterTage: null };
 
     const befund = bewerteFremdschrift(text, { absender, entityLinks, entityKennungen });
-    const urteil = entscheideFremdschrift(befund, absender);
+    let urteil = entscheideFremdschrift(befund, absender);
+    // Spam-Name: eindeutig genug zum Sperren, außer bei eingesessenen Mitgliedern (die nur gemeldet werden).
+    if (nameBefund.spam && urteil.massnahme !== 'sperren') {
+      if (befund.eingesessen) {
+        if (urteil.massnahme === 'keine') urteil = { massnahme: 'melden', grund: 'Anzeigename wie Werbe-Spam, aber eingesessenes Mitglied', belege: nameBefund.belege };
+      } else {
+        urteil = { massnahme: 'sperren', grund: 'Werbe-Spam im Anzeigenamen (fremde Schrift mit Kontakt/Werbewort)', belege: [...nameBefund.belege, ...urteil.belege] };
+      }
+    }
     if (urteil.massnahme === 'keine') return KEINE;
 
     const chatTitel = 'title' in chat ? chat.title || '' : '';
-    const anzeigename = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
+    const anzeigename = senderChat ? `Kanal: ${kanalTitel}` : `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
 
     // ---- Durchsetzung ----
     const { deleteMessage, banUserGlobally } = await import('./telegram');
@@ -189,16 +327,24 @@ export async function pruefeFremdschrift(ctx: Context): Promise<FremdschriftErge
 
     if (urteil.massnahme === 'sperren' && config.fremdschriftAutoBan && !panik) {
       try {
-        const r = await banUserGlobally(userId, `Fremdschrift-Spam: ${urteil.grund}`);
-        gesperrt = true;
-        gesperrtInGruppen = r.groups ?? 0;
+        if (senderChat) {
+          // Kanal als Absender: Kanal sperren (der Scheinabsender 777000 darf nie gebannt werden)
+          gesperrtInGruppen = await sperreKanalGlobal(ctx.telegram, senderChat.id);
+          gesperrt = gesperrtInGruppen > 0;
+        } else if (scheinAbsender) {
+          console.log('[Fremdschrift] Scheinabsender ohne Kanal: Nachricht gelöscht, kein Bann möglich');
+        } else {
+          const r = await banUserGlobally(userId, `Fremdschrift-Spam: ${urteil.grund}`);
+          gesperrt = true;
+          gesperrtInGruppen = r.groups ?? 0;
+        }
       } catch (e: any) {
         console.error('[Fremdschrift] Sperre fehlgeschlagen:', e?.message);
       }
     }
 
     protokolliere({
-      userId, chatId, chatTitel, messageId, username: ctx.from.username ?? null, anzeigename,
+      userId: senderChat ? senderChat.id : userId, chatId, chatTitel, messageId, username: (senderChat ? senderChat.username : ctx.from.username) ?? null, anzeigename,
       schrift: befund.schrift, anteilFremd: Math.round(befund.anteilFremd * 1000) / 1000,
       punkte: befund.punkte, eingesessen: befund.eingesessen,
       nachrichtenInGruppe: absender.nachrichtenInGruppe,
@@ -213,8 +359,11 @@ export async function pruefeFremdschrift(ctx: Context): Promise<FremdschriftErge
       (panik ? ' (PANIKMODUS: nichts durchgesetzt)' : '')
     );
 
-    await melde(ctx, {
-      userId, chatTitel, anzeigename, urteil, text, geloescht, gesperrt, gesperrtInGruppen, panik,
+    // Erledigte Sperren stehen nur im Shield-Log (fremdschrift_events) und im Tagesbericht,
+    // keine Einzelmeldung. Einzeln gemeldet wird nur, was ein Mensch ansehen muss.
+    const erledigt = urteil.massnahme === 'sperren' && geloescht && gesperrt && !panik;
+    if (!erledigt) await melde(ctx, {
+      userId: senderChat ? senderChat.id : userId, chatTitel, anzeigename, urteil, text, geloescht, gesperrt, gesperrtInGruppen, panik,
       schrift: befund.schrift ? schriftName(befund.schrift) : null,
       anteil: befund.anteilFremd, eingesessen: befund.eingesessen,
     });
