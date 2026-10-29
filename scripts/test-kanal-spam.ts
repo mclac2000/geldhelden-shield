@@ -47,7 +47,16 @@ async function main() {
     update: {},
     telegram: {
       getChat: async () => ({}),
-      callApi: async (m: string, p: any) => { aufrufe.push({ was: m, arg: p }); return true; },
+      deleteMessage: async (c: any, m: number) => { aufrufe.push({ was: 'telegramDelete', arg: [c, m] }); return true; },
+      callApi: async (m: string, p: any) => {
+        aufrufe.push({ was: m, arg: p });
+        if (m === 'forwardMessage') {
+          return p.message_id === 4712
+            ? { message_id: 90001, forward_origin: { type: 'user', sender_user: { id: 8000000001, is_bot: true, username: 'Dhm_x_bot' } }, text: '天赐代发团队 Telegram 社群推广引流 @xxin7', reply_markup: { inline_keyboard: [[{ text: '专业代发广告', url: 'https://t.me/xxin7' }]] } }
+            : { message_id: 90002, forward_origin: { type: 'user', sender_user: { id: 123, is_bot: false, first_name: 'Rolf' } }, text: 'Danke euch!' };
+        }
+        return true;
+      },
       sendMessage: async () => ({}),
     },
   });
@@ -64,6 +73,11 @@ async function main() {
     { was: 'Normales Mitglied, deutsch mit Emojis/Link', ctx: mkCtx(mensch(945531725, 'Rolf T.'), { text: DEUTSCH }), geloescht: false },
     { was: 'Normales Mitglied mit chinesischem Namen, deutscher Text', ctx: mkCtx(mensch(945531726, '李小明'), { text: DEUTSCH }), geloescht: false },
     { was: 'Kanal mit deutschem Text, harmlosem Namen', ctx: mkCtx({ id: 136817688, is_bot: true, first_name: 'Channel' }, { text: DEUTSCH, sender_chat: { id: -1009990003, type: 'channel', title: 'Freiheit Podcast' } }), geloescht: false },
+    { was: 'Bot-Kette: nur @…bot-Erwähnungen (Gast-Bots)', ctx: mkCtx(mensch(5449050949, 'Sushil Kumar'), { text: '@Dhm_d161b2acbot  @Dhm_210e889cbot  @Dhm_83c549debot' }), geloescht: true, nutzerGebannt: true },
+    { was: 'Mensch: eine Bot-Erwähnung im deutschen Satz', ctx: mkCtx(mensch(945531728, 'Karl'), { text: 'Nutzt dafür doch den @GeldheldenBot, der erklärt alles.' }), geloescht: false },
+    { was: 'Mensch: zwei Bots, aber mit Erklärung', ctx: mkCtx(mensch(945531729, 'Uta'), { text: 'Ich nutze @GeldheldenBot und @wetter_bot jeden Tag, beide sind super und kostenlos.' }), geloescht: false },
+    { was: 'Nachricht über Bot (via_bot) mit CJK-Text und URL-Tasten', ctx: mkCtx(mensch(8800000020, 'Max'), { text: '专业代发广告 推广引流', via_bot: { id: 1, is_bot: true, username: 'Dhm_y_bot' }, reply_markup: { inline_keyboard: [[{ text: '售卖广告群1000个30u', url: 'https://t.me/xxin7' }]] } }), geloescht: true, nutzerGebannt: true },
+    { was: 'Mensch: deutscher Text mit URL-Taste (Bot-Post)', ctx: mkCtx(mensch(945531730, 'Eva'), { text: 'Hier der Link zur Anmeldung', reply_markup: { inline_keyboard: [[{ text: 'Zur Anmeldung', url: 'https://geldhelden.org/meetups' }]] } }), geloescht: false },
     { was: 'Mensch: nur Emoji', ctx: mkCtx(mensch(945531727, 'Anna'), { text: '👍👍' }), geloescht: false },
   ];
 
@@ -78,6 +92,15 @@ async function main() {
     console.log(`${ok ? '✅' : '❌'} ${f.was}  → massnahme=${r.massnahme} geloescht=${geloescht} kanalBann=${kanal} nutzerBann=${nutzer}`);
     if (!ok) fehler.push(f.was);
   }
+
+  // Aufräumen der Bot-Antworten hinter einem Auslöser (4711): nur ID 4712 ist Bot-Werbung
+  aufrufe.length = 0;
+  const { raeumeBotAntworten } = await import('../src/fremdschriftGuard');
+  const n = await raeumeBotAntworten(mkCtx(mensch(1, 'x'), {}).telegram, CHAT, 4711, 3);
+  const geloeschteIds = aufrufe.filter(a => a.was === 'telegramDelete' && String(a.arg[0]) === CHAT).map(a => a.arg[1]);
+  const okRaeumen = n === 1 && geloeschteIds.length === 1 && geloeschteIds[0] === 4712;
+  console.log(`${okRaeumen ? '✅' : '❌'} Bot-Antwort aufräumen: nur 4712 (Bot, CJK, Tasten) gelöscht, Rest nicht → gelöscht=${JSON.stringify(geloeschteIds)}`);
+  if (!okRaeumen) fehler.push('Bot-Antworten aufräumen');
 
   // Beitritt mit Spam-Namen
   aufrufe.length = 0;

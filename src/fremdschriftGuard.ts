@@ -19,7 +19,7 @@
 
 import { Context } from 'telegraf';
 import { config } from './config';
-import { bewerteFremdschrift, bewerteAnzeigename, entscheideFremdschrift, FremdschriftMassnahme, schriftName } from './fremdschriftRisk';
+import { bewerteFremdschrift, bewerteAnzeigename, bewerteBotKette, entscheideFremdschrift, FremdschriftMassnahme, schriftName } from './fremdschriftRisk';
 import type { Absender } from './copyTradingRisk';
 
 export interface FremdschriftErgebnis {
@@ -205,6 +205,36 @@ async function verknuepfterKanal(ctx: Context, chatId: string): Promise<string |
   return id;
 }
 
+/**
+ * Räumt Antworten fremder Bots hinter einer Auslöser-Nachricht ab. Der Shield sieht Bot-Nachrichten nie; die IDs
+ * direkt nach dem Auslöser werden deshalb über eine Weiterleitung in den Admin-Log-Chat geprüft (Kopie sofort gelöscht)
+ * und gelöscht, wenn der Absender ein Bot ist oder die Nachricht über einen Bot lief.
+ */
+export async function raeumeBotAntworten(telegram: any, chatId: string, ausloeserId: number, spanne = 10): Promise<number> {
+  let geloescht = 0;
+  for (let id = ausloeserId + 1; id <= ausloeserId + spanne; id++) {
+    try {
+      const k = await telegram.callApi('forwardMessage', { chat_id: config.adminLogChat, from_chat_id: chatId, message_id: id, disable_notification: true });
+      try { await telegram.deleteMessage(config.adminLogChat, k.message_id); } catch { /* Kopie bleibt höchstens stehen */ }
+      const fo: any = k.forward_origin || {};
+      const eigen = fo.type === 'user' && fo.sender_user?.id === telegram.botInfo?.id;
+      const inhalt = `${k.text || ''}${k.caption || ''}`;
+      const werbung = /[\p{Script=Han}]{3,}/u.test(inhalt) || !!k.reply_markup || !!k.via_bot;
+      const vonBot = !eigen && werbung && ((fo.type === 'user' && fo.sender_user?.is_bot) || !!k.via_bot || !!k.reply_markup);
+      if (vonBot) {
+        await telegram.deleteMessage(chatId, id);
+        geloescht++;
+        console.log(`[Fremdschrift][BOT-ANTWORT] gelöscht chat=${chatId} msg=${id} von=${fo.sender_user?.username ?? fo.sender_user?.first_name ?? '?'} via=${k.via_bot?.username ?? '-'}`);
+      }
+    } catch (e: any) {
+      const code = e?.response?.error_code;
+      if (code === 429) await new Promise(r => setTimeout(r, ((e.response?.parameters?.retry_after ?? 2) + 1) * 1000));
+      // 400 = Nachricht existiert nicht (mehr): weiter
+    }
+  }
+  return geloescht;
+}
+
 /** Sperrt einen Kanal als Absender in allen verwalteten Gruppen. */
 export async function sperreKanalGlobal(telegram: any, kanalId: number): Promise<number> {
   const { getManagedGroups } = await import('./db');
@@ -238,7 +268,7 @@ export async function pruefeFremdschrift(ctx: Context): Promise<FremdschriftErge
     // Nachricht im Namen eines Kanals? Dann entscheidet der Kanal, nicht der Scheinabsender.
     const senderChat: any = msg.sender_chat && msg.sender_chat.id !== chat.id ? msg.sender_chat : null;
     const scheinAbsender = SCHEINABSENDER.has(ctx.from.id);
-    if (ctx.from.is_bot && !scheinAbsender) return KEINE;
+    if (ctx.from.is_bot && !scheinAbsender && ctx.from.id === (ctx as any).botInfo?.id) return KEINE;
     if (msg.sender_chat && msg.sender_chat.id === chat.id) return KEINE; // anonymer Admin der Gruppe selbst
     if (senderChat) {
       const eigene = eigeneKanaele();
@@ -253,15 +283,22 @@ export async function pruefeFremdschrift(ctx: Context): Promise<FremdschriftErge
 
     // Text erst prüfen — billig, und die allermeisten Nachrichten enden hier.
     const ausBildunterschrift = !msg.text && typeof msg.caption === 'string';
-    const text: string = msg.text || msg.caption || '';
+    const textOhneTasten: string = msg.text || msg.caption || '';
+    // Inline-Tasten (URL-Buttons) gehören zur Werbung: Tastentexte und Ziele zählen als Text.
+    const tasten: string[] = [];
+    for (const zeile of msg.reply_markup?.inline_keyboard || []) for (const t of zeile) { if (t?.text) tasten.push(t.text); if (t?.url) tasten.push(t.url); }
+    const viaBot: any = msg.via_bot || null;
+    const text: string = tasten.length ? `${textOhneTasten}\n${tasten.join('\n')}` : textOhneTasten;
+    const botKette = bewerteBotKette(textOhneTasten);
 
     // Anzeigename: bei Kanälen der Kanalname, sonst Vor-/Nachname. Der Name ist oft die eigentliche Anzeige.
     const anzeigeText = senderChat ? kanalTitel : `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
     const nameBefund = bewerteAnzeigename(anzeigeText);
     if (!text.trim() && !nameBefund.spam) return KEINE;
+    if (viaBot || tasten.length) console.log(`[Fremdschrift][TASTEN] from=${ctx.from.id} via_bot=${viaBot?.username ?? '-'} tasten=${tasten.length} chat=${chat.id} msg=${msg.message_id}`);
 
     // Schnellfilter: ohne Zielschrift, ohne Verschleierungszeichen kein Befund.
-    if (!nameBefund.spam && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Cyrillic}\p{Script=Arabic}\p{Script=Greek}­​-‏‪-‮⁠-⁤﻿\u{1D400}-\u{1D7FF}Ａ-ｚ]/u.test(text)) {
+    if (!nameBefund.spam && !botKette.treffer && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Cyrillic}\p{Script=Arabic}\p{Script=Greek}­​-‏‪-‮⁠-⁤﻿\u{1D400}-\u{1D7FF}Ａ-ｚ]/u.test(text)) {
       return KEINE;
     }
 
@@ -306,6 +343,12 @@ export async function pruefeFremdschrift(ctx: Context): Promise<FremdschriftErge
       } else {
         urteil = { massnahme: 'sperren', grund: 'Werbe-Spam im Anzeigenamen (fremde Schrift mit Kontakt/Werbewort)', belege: [...nameBefund.belege, ...urteil.belege] };
       }
+    }
+    if (botKette.treffer && urteil.massnahme !== 'sperren') {
+      urteil = { massnahme: 'sperren', grund: 'Kette von Bot-Erwähnungen (löst Werbe-Antworten fremder Bots aus)', belege: [`Bots: ${botKette.bots.slice(0, 4).join(', ')}`, ...urteil.belege] };
+    }
+    if (viaBot && urteil.massnahme === 'melden') {
+      urteil = { massnahme: 'sperren', grund: `Werbe-Nachricht über Bot @${viaBot.username || viaBot.id}`, belege: urteil.belege };
     }
     if (urteil.massnahme === 'keine') return KEINE;
 
@@ -358,6 +401,10 @@ export async function pruefeFremdschrift(ctx: Context): Promise<FremdschriftErge
       `signale=${befund.signale.join(',')} geloescht=${geloescht} gesperrt=${gesperrt ? gesperrtInGruppen : 'nein'}` +
       (panik ? ' (PANIKMODUS: nichts durchgesetzt)' : '')
     );
+
+    if (botKette.treffer && geloescht && !panik) {
+      for (const warte of [4000, 12000]) setTimeout(() => { raeumeBotAntworten(ctx.telegram, chatId, messageId).catch(() => {}); }, warte);
+    }
 
     // Erledigte Sperren stehen nur im Shield-Log (fremdschrift_events) und im Tagesbericht,
     // keine Einzelmeldung. Einzeln gemeldet wird nur, was ein Mensch ansehen muss.

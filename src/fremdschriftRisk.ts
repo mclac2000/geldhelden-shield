@@ -286,6 +286,26 @@ export function bewerteAnzeigename(name: string): NamensBefund {
   return { spam: belege.length > 0, belege: belege.length ? [`Anzeigename „${roh.slice(0, 60)}"`, ...belege] : belege };
 }
 
+export interface BotKetteBefund {
+  treffer: boolean;
+  bots: string[];
+}
+
+/**
+ * Kette von Bot-Erwähnungen ohne Text: „@Dhm_d161b2acbot  @Dhm_210e889cbot  @Dhm_83c549debot".
+ * 29.10.2026: Solche Nachrichten lösen bei fremden Bots Antworten aus (Gast-Modus), die Werbe-Spam samt
+ * URL-Tasten in die Gruppe setzen. Diese Bot-Antworten bekommt der Shield nie zugestellt (Bots sehen keine Bot-Nachrichten),
+ * sichtbar ist nur die auslösende Nachricht. Treffer: mindestens 2 verschiedene @…bot-Kennungen und sonst höchstens
+ * 12 Zeichen Text.
+ */
+export function bewerteBotKette(rohtext: string): BotKetteBefund {
+  const text = (rohtext || '').normalize('NFKC');
+  const bots = [...new Set((text.match(/(?<![\w.])@[A-Za-z][A-Za-z0-9_]{2,}bot\b/gi) || []).map(b => b.toLowerCase()))];
+  if (bots.length < 2) return { treffer: false, bots };
+  const rest = text.replace(/@[A-Za-z0-9_]+/g, ' ').replace(EMOJI_SEQUENZ, ' ').replace(/[^\p{L}\p{N}]+/gu, '');
+  return { treffer: rest.length <= 12, bots };
+}
+
 export function schriftName(s: Schrift | null): string {
   return s === 'cjk' ? 'chinesisch/japanisch/koreanisch' : s === 'kyrillisch' ? 'kyrillisch' : s === 'arabisch' ? 'arabisch' : '—';
 }
