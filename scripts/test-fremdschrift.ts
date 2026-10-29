@@ -74,6 +74,7 @@ export const NAMEN_SPAM: Array<[string, string]> = [
   ['Name mit Kennung', '推广引流 @tg_ad_88'],
   ['Kanalname mit Link', '天赐团队 t.me/xxin7'],
   ['Name nur Werbewort', '专业代发广告'],
+  ['Name nur neues Werbewort', '天赐代发团队'],
 ];
 export const NAMEN_OK: Array<[string, string]> = [
   ['Deutscher Name', 'Marco Müller'],

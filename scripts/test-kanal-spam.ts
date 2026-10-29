@@ -60,7 +60,7 @@ async function main() {
     { was: 'Mensch mit Spam-Namen, Text harmlos-leer (nur Bild-Beschriftung)', ctx: mkCtx({ id: 8800000001, is_bot: false, first_name: '天赐代发👉@xxin7👈Direct🔺ad' }, { caption: 'Hallo' }), geloescht: true, nutzerGebannt: true },
     { was: 'Mensch mit Spam-Text (neues Konto)', ctx: mkCtx(mensch(8800000002, 'Li'), { text: SPAM }), geloescht: true, nutzerGebannt: true },
     { was: 'Anonymer Admin der Gruppe selbst (sender_chat = Gruppe)', ctx: mkCtx({ id: 1087968824, is_bot: true, first_name: 'Group' }, { text: SPAM, sender_chat: { id: Number(CHAT), type: 'supergroup', title: 'T' } }), geloescht: false },
-    { was: 'Eigener Hauptkanal (Auto-Weiterleitung 777000)', ctx: mkCtx({ id: 777000, is_bot: false, first_name: 'Telegram' }, { text: DEUTSCH, sender_chat: { id: -1001848781746, type: 'channel', title: 'Geldhelden' } }), geloescht: false },
+    { was: 'Eigener Hauptkanal (Auto-Weiterleitung 777000)', ctx: mkCtx({ id: 777000, is_bot: false, first_name: 'Telegram' }, { text: SPAM, sender_chat: { id: -1001848781746, type: 'channel', title: 'Geldhelden' } }), geloescht: false },
     { was: 'Normales Mitglied, deutsch mit Emojis/Link', ctx: mkCtx(mensch(945531725, 'Rolf T.'), { text: DEUTSCH }), geloescht: false },
     { was: 'Normales Mitglied mit chinesischem Namen, deutscher Text', ctx: mkCtx(mensch(945531726, '李小明'), { text: DEUTSCH }), geloescht: false },
     { was: 'Kanal mit deutschem Text, harmlosem Namen', ctx: mkCtx({ id: 136817688, is_bot: true, first_name: 'Channel' }, { text: DEUTSCH, sender_chat: { id: -1009990003, type: 'channel', title: 'Freiheit Podcast' } }), geloescht: false },
@@ -74,7 +74,7 @@ async function main() {
     const geloescht = aufrufe.some(a => a.was === 'delete');
     const kanal = aufrufe.some(a => a.was === 'banChatSenderChat');
     const nutzer = aufrufe.some(a => a.was === 'banUser');
-    const ok = geloescht === f.geloescht && (!f.kanalGebannt || kanal) && (!f.nutzerGebannt || nutzer) && (!(f.geloescht === false) || (!kanal && !nutzer));
+    const ok = geloescht === f.geloescht && (!!f.kanalGebannt === kanal) && (!!f.nutzerGebannt === nutzer);
     console.log(`${ok ? '✅' : '❌'} ${f.was}  → massnahme=${r.massnahme} geloescht=${geloescht} kanalBann=${kanal} nutzerBann=${nutzer}`);
     if (!ok) fehler.push(f.was);
   }
