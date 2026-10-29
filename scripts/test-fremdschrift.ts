@@ -5,7 +5,7 @@
  * Aufruf:  npx ts-node scripts/test-fremdschrift.ts
  */
 
-import { bewerteFremdschrift, bewerteAnzeigename, entscheideFremdschrift, FremdschriftMassnahme } from '../src/fremdschriftRisk';
+import { bewerteFremdschrift, bewerteAnzeigename, bewerteBotKette, entscheideFremdschrift, FremdschriftMassnahme } from '../src/fremdschriftRisk';
 import type { Absender } from '../src/copyTradingRisk';
 
 const FREMD: Absender = { nachrichtenInGruppe: 1, kontoAlterTage: null };
@@ -94,11 +94,29 @@ function pruefeNamen(): string[] {
   return fehler;
 }
 
+function pruefeBotKette(): string[] {
+  console.log(`\n${'='.repeat(78)}\n4. BOT-KETTEN\n${'='.repeat(78)}`);
+  const f: Array<[string, string, boolean]> = [
+    ['2 Bots ohne Text', '@Dhm_d161b2acbot  @Dhm_210e889cbot', true],
+    ['3 Bots ohne Text', '@Dhm_d161b2acbot  @Dhm_210e889cbot  @Dhm_83c549debot', true],
+    ['1 Bot allein', '@Dhm_d161b2acbot', false],
+    ['2 Bots, 3 Zeichen Rest', '@aaa_bot @bbb_bot ok', true],
+    ['2 Bots mit Satz (>12 Zeichen)', '@GeldheldenBot @wetter_bot beide sind super', false],
+    ['2 gleiche Bots', '@Dhm_d161b2acbot @dhm_d161b2acbot', false],
+    ['Deutscher Satz mit einem Bot', 'Nutzt dafür den @GeldheldenBot, der erklärt alles.', false],
+    ['E-Mail ist keine Bot-Erwähnung', 'mail an info@meinbot.de und a@zweibot.de', false],
+  ];
+  const fehler: string[] = [];
+  for (const [was, t, soll] of f) { const r = bewerteBotKette(t).treffer; console.log(`${r === soll ? '✅' : '❌'} ${was}`); if (r !== soll) fehler.push(`Botkette ${was}`); }
+  return fehler;
+}
+
 if (require.main === module) {
   const f1 = pruefe(MUSS_GREIFEN, '1. MUSS GREIFEN — Original + Varianten');
   const f2 = pruefe(DARF_NICHT_GREIFEN, '2. DARF NICHT GREIFEN — echte deutsche Nachrichten');
   const f3 = pruefeNamen();
-  const fehler = [...f1, ...f2, ...f3];
+  const f4 = pruefeBotKette();
+  const fehler = [...f1, ...f2, ...f3, ...f4];
   console.log(`\n${'='.repeat(78)}`);
   console.log(`Erkannt:       ${MUSS_GREIFEN.length - f1.length}/${MUSS_GREIFEN.length}`);
   console.log(`Durchgelassen: ${DARF_NICHT_GREIFEN.length - f2.length}/${DARF_NICHT_GREIFEN.length}`);

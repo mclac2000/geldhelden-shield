@@ -46,11 +46,14 @@ async function main() {
     message: { message_id: 4711, message_thread_id: 3, ...msg },
     update: {},
     telegram: {
+      botInfo: { id: 42 },
       getChat: async () => ({}),
       deleteMessage: async (c: any, m: number) => { aufrufe.push({ was: 'telegramDelete', arg: [c, m] }); return true; },
       callApi: async (m: string, p: any) => {
         aufrufe.push({ was: m, arg: p });
         if (m === 'forwardMessage') {
+          if (p.message_id === 4715) return { message_id: 90003, forward_origin: { type: 'hidden_user', sender_user_name: 'x' }, via_bot: { id: 7, is_bot: true, username: 'Dhm_z_bot' }, text: '推广引流 代发广告 24小时' };
+          if (p.message_id === 4716) return { message_id: 90004, forward_origin: { type: 'user', sender_user: { id: 42, is_bot: true, username: 'eigener_bot' } }, text: '推广引流 代发广告', reply_markup: { inline_keyboard: [[{ text: 'x', url: 'https://x.y' }]] } };
           return p.message_id === 4712
             ? { message_id: 90001, forward_origin: { type: 'user', sender_user: { id: 8000000001, is_bot: true, username: 'Dhm_x_bot' } }, text: '天赐代发团队 Telegram 社群推广引流 @xxin7', reply_markup: { inline_keyboard: [[{ text: '专业代发广告', url: 'https://t.me/xxin7' }]] } }
             : { message_id: 90002, forward_origin: { type: 'user', sender_user: { id: 123, is_bot: false, first_name: 'Rolf' } }, text: 'Danke euch!' };
@@ -78,6 +81,9 @@ async function main() {
     { was: 'Mensch: zwei Bots, aber mit Erklärung', ctx: mkCtx(mensch(945531729, 'Uta'), { text: 'Ich nutze @GeldheldenBot und @wetter_bot jeden Tag, beide sind super und kostenlos.' }), geloescht: false },
     { was: 'Nachricht über Bot (via_bot) mit CJK-Text und URL-Tasten', ctx: mkCtx(mensch(8800000020, 'Max'), { text: '专业代发广告 推广引流', via_bot: { id: 1, is_bot: true, username: 'Dhm_y_bot' }, reply_markup: { inline_keyboard: [[{ text: '售卖广告群1000个30u', url: 'https://t.me/xxin7' }]] } }), geloescht: true, nutzerGebannt: true },
     { was: 'Mensch: deutscher Text mit URL-Taste (Bot-Post)', ctx: mkCtx(mensch(945531730, 'Eva'), { text: 'Hier der Link zur Anmeldung', reply_markup: { inline_keyboard: [[{ text: 'Zur Anmeldung', url: 'https://geldhelden.org/meetups' }]] } }), geloescht: false },
+    { was: 'Spam NUR in URL-Tasten (Text harmlos)', ctx: mkCtx(mensch(8800000021, 'Lea'), { text: 'Hallo', reply_markup: { inline_keyboard: [[{ text: '售卖广告群1000个30u', url: 'https://t.me/xxin7' }], [{ text: '专业推广引流', url: 'https://t.me/xxin7' }]] } }), geloescht: true, nutzerGebannt: true },
+    { was: 'Fremder Bot schreibt Spam (is_bot)', ctx: mkCtx({ id: 8000000002, is_bot: true, first_name: 'Dhm', username: 'Dhm_q_bot' }, { text: SPAM }), geloescht: true, nutzerGebannt: true },
+    { was: 'Eigener Bot (id 42) schreibt Text', ctx: mkCtx({ id: 42, is_bot: true, first_name: 'Shield' }, { text: SPAM }), geloescht: false },
     { was: 'Mensch: nur Emoji', ctx: mkCtx(mensch(945531727, 'Anna'), { text: '👍👍' }), geloescht: false },
   ];
 
@@ -96,10 +102,10 @@ async function main() {
   // Aufräumen der Bot-Antworten hinter einem Auslöser (4711): nur ID 4712 ist Bot-Werbung
   aufrufe.length = 0;
   const { raeumeBotAntworten } = await import('../src/fremdschriftGuard');
-  const n = await raeumeBotAntworten(mkCtx(mensch(1, 'x'), {}).telegram, CHAT, 4711, 3);
+  const n = await raeumeBotAntworten(mkCtx(mensch(1, 'x'), {}).telegram, CHAT, 4711, 5);
   const geloeschteIds = aufrufe.filter(a => a.was === 'telegramDelete' && String(a.arg[0]) === CHAT).map(a => a.arg[1]);
-  const okRaeumen = n === 1 && geloeschteIds.length === 1 && geloeschteIds[0] === 4712;
-  console.log(`${okRaeumen ? '✅' : '❌'} Bot-Antwort aufräumen: nur 4712 (Bot, CJK, Tasten) gelöscht, Rest nicht → gelöscht=${JSON.stringify(geloeschteIds)}`);
+  const okRaeumen = n === 2 && geloeschteIds.length === 2 && geloeschteIds.includes(4712) && geloeschteIds.includes(4715);
+  console.log(`${okRaeumen ? '✅' : '❌'} Bot-Antwort aufräumen: nur 4712 (Bot+Tasten) und 4715 (via_bot) gelöscht, 4713/4714 (Menschen) und 4716 (eigener Bot) nicht → gelöscht=${JSON.stringify(geloeschteIds)}`);
   if (!okRaeumen) fehler.push('Bot-Antworten aufräumen');
 
   // Beitritt mit Spam-Namen

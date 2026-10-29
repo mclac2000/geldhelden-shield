@@ -268,7 +268,7 @@ export async function pruefeFremdschrift(ctx: Context): Promise<FremdschriftErge
     // Nachricht im Namen eines Kanals? Dann entscheidet der Kanal, nicht der Scheinabsender.
     const senderChat: any = msg.sender_chat && msg.sender_chat.id !== chat.id ? msg.sender_chat : null;
     const scheinAbsender = SCHEINABSENDER.has(ctx.from.id);
-    if (ctx.from.is_bot && !scheinAbsender && ctx.from.id === (ctx as any).botInfo?.id) return KEINE;
+    if (ctx.from.is_bot && !scheinAbsender && ctx.from.id === ((ctx as any).botInfo?.id ?? (ctx.telegram as any)?.botInfo?.id)) return KEINE;
     if (msg.sender_chat && msg.sender_chat.id === chat.id) return KEINE; // anonymer Admin der Gruppe selbst
     if (senderChat) {
       const eigene = eigeneKanaele();
