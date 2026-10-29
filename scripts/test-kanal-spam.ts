@@ -6,6 +6,8 @@
  * Prüft pruefeFremdschrift() mit gespielten Updates gegen eine leere Wegwerf-Datenbank;
  * Telegram-Aufrufe sind Attrappen und werden aufgezeichnet.
  * Aufruf:  npx ts-node scripts/test-kanal-spam.ts
+ * NICHT in `npm test`: das Host-Modul better-sqlite3 auf geldhelden-aps ist gegen eine andere Node-Version gebaut
+ * (libnode.so.72) und kann keine Datenbank öffnen. Lauf im Bot-Image: siehe Commit 29.10.2026 / docker run --entrypoint sh geldheldenshield-bot.
  */
 import * as os from 'os';
 import * as path from 'path';
