@@ -88,6 +88,8 @@ setBotInstance(bot);
 // DEBUG MIDDLEWARE + Linked Chat Handler
 bot.use(async (ctx, next) => {
   console.log('UPD:', ctx.updateType);
+  // Roh-Protokoll (48 h) für die Hauptgruppe — Diagnose von Werbe-Spam (29.10.2026)
+  try { (await import('./rohUpdates')).protokolliereRoh(ctx.update); } catch { /* Diagnose darf nie stören */ }
   // Pruefe auf Nachrichten aus der verknuepften Diskussionsgruppe
   if (ctx.updateType === 'message') {
     const msg = (ctx.update as any).message;
