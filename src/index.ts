@@ -2750,6 +2750,15 @@ setInterval(async () => {
 markJobRegistered('cluster-erkennung', `alle ${CLUSTER_DETECTION_INTERVAL_MS / 60000} Minuten`);
 console.log(`[Startup] Cluster-Erkennung gestartet (alle ${CLUSTER_DETECTION_INTERVAL_MS / 1000 / 60} Minuten)`);
 
+// Gemeinsame Sperrliste -> MeinCEO-Community-Bot (Auftrag Marco 14.11.2026): alle 5 Minuten, Einweg, nur Sperrdaten.
+// Ohne MEINCEO_SPERRSYNC_URL/-TOKEN in der .env passiert nichts.
+const SPERRSYNC_INTERVAL_MS = 5 * 60 * 1000;
+import('./sperrSync').then(({ runSperrSync }) => {
+  setTimeout(() => { void runSperrSync(); }, 60 * 1000);
+  setInterval(() => { void runSperrSync(); }, SPERRSYNC_INTERVAL_MS);
+});
+markJobRegistered('sperrsync-meinceo', `alle ${SPERRSYNC_INTERVAL_MS / 60000} Minuten`);
+
 // DeletedAccount-AutoRemove: Täglich um 03:00 gelöschte Konten aus allen Gruppen bereinigen
 registerCron('geloeschte-konten', '0 3 * * *', async () => {
   // Aufbewahrung des Lernprotokolls: unauffällige Proben älter als 14 Tage
