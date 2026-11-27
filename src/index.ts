@@ -68,6 +68,7 @@ import {
   isAdmin,
 } from './admin';
 import { registerCron, markJobRegistered, pruefeUndMelde } from './jobRegistry';
+import { registriereMeetupKodex } from './meetupKodex';
 import { logAdmin, setBotInstance, unrestrictUserInAllGroups, sendToAdminLogChat, sendJoinLogWithActions, banUserInAllGroups, isUserAdminOrCreatorInGroup, sendEscalationLog, checkImpersonation, sendImpersonationWarning, isBotAdminInGroup, isGroupManaged, isGroupManagedLive, deleteMessage } from './telegram';
 import { ShieldEvent, createJoinEvent, ShieldEventSource, ShieldEventType, logEvent } from './events';
 import { sendWelcomeIfEnabled } from './welcomeNew';
@@ -775,6 +776,13 @@ bot.on('new_chat_members', async (ctx: Context) => {
         },
         ShieldEventSource.NEW_CHAT_MEMBERS
           );
+      // Verhaltenskodex fuer Meetup-Gruppen (src/meetupKodex.ts) — nach der Scam-Pruefung
+      try {
+        const { aufBeitritt } = await import('./meetupKodex');
+        await aufBeitritt(ctx.telegram, chatId, member);
+      } catch (kodexError: unknown) {
+        console.error('[Kodex] new_chat_members:', kodexError instanceof Error ? kodexError.message : String(kodexError));
+      }
     }
   } catch (error: any) {
     console.error('[Error] Fehler beim Verarbeiten von new_chat_members:', error.message);
@@ -814,6 +822,19 @@ bot.on('chat_member', async (ctx: Context) => {
           },
           ShieldEventSource.CHAT_MEMBER
         );
+    }
+
+    // Verhaltenskodex (src/meetupKodex.ts): das BETROFFENE Konto, nicht der Ausloeser (Admin fuegt hinzu).
+    if (wasLeft && isNowMember) {
+      try {
+        const neu = (member as any).user;
+        if (neu && !neu.is_bot) {
+          const { aufBeitritt } = await import('./meetupKodex');
+          await aufBeitritt(ctx.telegram, chatId, neu);
+        }
+      } catch (kodexError: unknown) {
+        console.error('[Kodex] chat_member:', kodexError instanceof Error ? kodexError.message : String(kodexError));
+      }
     }
 
     // Cross-Ban: Wenn ein Admin in einer Gruppe jemanden bannt → sofort in ALLEN Gruppen bannen
@@ -1059,6 +1080,13 @@ bot.command('panic', async (ctx: Context) => {
 
 // Command: /help oder /menu - Zeigt alle verfuegbaren Befehle
 bot.command(['help', 'menu', 'start'], async (ctx: Context) => {
+  // Kodex: Vorstellung anonymer Konten (/start vs_<gruppe>), siehe src/meetupKodex.ts
+  try {
+    const { behandleStartParameter } = await import('./meetupKodex');
+    if (await behandleStartParameter(ctx)) return;
+  } catch (kodexError: unknown) {
+    console.error('[Kodex] /start:', kodexError instanceof Error ? kodexError.message : String(kodexError));
+  }
   // Ein normales Mitglied, das den Bot im Privatchat startet, darf nicht vor
   // einer Admin-Hilfe stehen. Es soll genau eine Sache erfahren: dass es hier
   // eine Betrugsnachricht melden kann. Das ist der einzige Hebel auf die
@@ -1964,6 +1992,10 @@ bot.command('send_meetup_poll', async (ctx: Context) => {
 });
 
 // Event: Nachrichten (für Baseline-Erfassung + Moderation)
+// Verhaltenskodex + Verwarnsystem der Meetup-Gruppen: /melden /verwarnen /werbung /aufheben /verwarnstatus /kodex
+// (statisch, damit die Befehle VOR bot.on('message'/'text') in der Kette stehen)
+try { registriereMeetupKodex(bot); } catch (e: any) { console.error('[Kodex] Registrierung fehlgeschlagen:', e?.message); }
+
 bot.on('message', async (ctx: Context, next) => {
   try {
     // IDENTITÄTS-PRÜFUNG bei Nachrichten.
@@ -2016,6 +2048,12 @@ bot.on('message', async (ctx: Context, next) => {
     // nichts erkannt, weil er nur Gruppeninhalte sieht.
     // Sperrt bewusst niemanden — siehe src/meldeweg.ts.
     if (ctx.chat?.type === 'private') {
+      try {
+        const { behandlePrivatVorstellung } = await import('./meetupKodex');
+        if (await behandlePrivatVorstellung(ctx)) return;
+      } catch (kodexError: unknown) {
+        console.error('[Kodex] Vorstellung:', kodexError instanceof Error ? kodexError.message : String(kodexError));
+      }
       try {
         const { behandleMeldung } = await import('./meldeweg');
         if (await behandleMeldung(ctx)) return;
@@ -2340,6 +2378,13 @@ bot.on('callback_query', async (ctx: Context) => {
     
     const data = ctx.callbackQuery.data;
     const queryId = ctx.callbackQuery.id;
+
+    // Verhaltenskodex / Verwarnsystem (src/meetupKodex.ts)
+    if (data.startsWith('kodex_ja:') || data.startsWith('kv:')) {
+      const { behandleKodexKnopf, behandleMeldungsKnopf } = await import('./meetupKodex');
+      if (await behandleKodexKnopf(ctx)) return;
+      if (await behandleMeldungsKnopf(ctx)) return;
+    }
     
     // Video-Callbacks werden von handleVideoCallback verarbeitet
     if (data.startsWith('video_')) {
@@ -2828,6 +2873,14 @@ console.log('[Startup] DeletedAccount-Bereinigung gestartet (täglich 03:00 Berl
 // Werbe-Wellen: eigene Gruppen-Links täglich freigeben + alte Sichtungen aufräumen.
 // Der Lauf muss regelmäßig erfolgen, damit neu angelegte Gruppen automatisch auf
 // die Freigabeliste kommen und nicht als fremder Link gezählt werden.
+// Kodex: Erinnerung nach Ablauf der 14-Tage-Frist (einmal je Gruppe) und Aufraeumen alter Willkommens-Knoepfe
+registerCron('kodex-erinnerung', '0 10 * * *', async () => {
+  const { erinnereFaelligeAufrufe, raeumeAlteGatesAuf } = await import('./meetupKodex');
+  const n = await erinnereFaelligeAufrufe(bot.telegram);
+  const a = await raeumeAlteGatesAuf(bot.telegram);
+  if (n || a) console.log(`[Kodex] Erinnerungen: ${n}, alte Willkommens-Knoepfe entfernt: ${a}`);
+});
+
 registerCron('eigene-links', '30 3 * * *', async () => {
   try {
     const { syncOwnGroupLinks } = await import('./ownLinks');

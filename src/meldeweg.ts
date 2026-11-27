@@ -187,7 +187,9 @@ const HILFE =
   'Wenn dich jemand aus unseren Gruppen privat anschreibt und dir etwas andreht:\n\n' +
   '➡️ Lange auf die Nachricht tippen → „Weiterleiten" → mich auswählen.\n\n' +
   'Mehr nicht. Ich lege sie unseren Admins vor. Du musst nichts erklären und ' +
-  'nichts ausfüllen — und es wird nichts automatisch gesperrt, ein Mensch schaut darauf.';
+  'nichts ausfüllen — und es wird nichts automatisch gesperrt, ein Mensch schaut darauf.\n\n' +
+  '📸 Einen Screenshot kannst du mir auch einfach hier schicken.\n' +
+  'In einer Meetup-Gruppe: auf die Nachricht antworten und /melden schreiben.';
 
 /**
  * Nimmt eine Meldung entgegen. Gibt true zurueck, wenn die Nachricht als
@@ -202,7 +204,9 @@ export async function behandleMeldung(ctx: Context): Promise<boolean> {
   const text: string = msg.text || msg.caption || '';
   if (text.startsWith('/') && !istWeitergeleitet(msg)) return false;
 
-  if (!istWeitergeleitet(msg)) {
+  // Screenshot (Bild/Datei ohne Weiterleitung) gilt seit 27.11.2026 ebenfalls als Meldung (Beleg).
+  const istScreenshot = !istWeitergeleitet(msg) && !!(msg.photo || msg.document);
+  if (!istWeitergeleitet(msg) && !istScreenshot) {
     // Jemand schreibt dem Bot einfach so. Kurz erklaeren, wie es geht.
     try { await ctx.reply(HILFE); } catch { /* egal */ }
     return true;
@@ -221,6 +225,7 @@ export async function behandleMeldung(ctx: Context): Promise<boolean> {
     LIMIT 1
   `).get(ctx.from.id, text.slice(0, 4000), Date.now() - 10 * 60 * 1000) as any;
 
+  let meldungsId: number | null = schon ? schon.id : null;
   if (!schon) {
     // Alles, was Telegram zur Herkunft mitgeschickt hat — roh und ungedeutet.
     let roh: string | null = null;
@@ -249,8 +254,9 @@ export async function behandleMeldung(ctx: Context): Promise<boolean> {
     `).run(
       Date.now(), ctx.from.id, ctx.from.username ?? null, melderName,
       h.id, h.username, h.name, h.art, text.slice(0, 4000), h.datum,
-      roh, art
+      roh, istScreenshot ? 'screenshot,' + art : art
     );
+    meldungsId = (db.prepare('SELECT last_insert_rowid() AS id').get() as any).id;
 
     // Auch ins Protokoll, damit der erste echte Fall sofort sichtbar ist,
     // ohne die Datenbank zu oeffnen.
@@ -261,18 +267,20 @@ export async function behandleMeldung(ctx: Context): Promise<boolean> {
   // Dem Mitglied sofort antworten. Wer keine Rueckmeldung bekommt, meldet nie wieder.
   try {
     await ctx.reply(
-      'Danke — angekommen. Ich habe die Nachricht unseren Admins vorgelegt.\n\n' +
+      'Danke — angekommen. Ich habe die Nachricht unseren Admins vorgelegt' +
+      (meldungsId ? ` (Meldungsnummer M${meldungsId}).\n\n` : '.\n\n') +
       'Du musst nichts weiter tun. Falls dich jemand unter Druck setzt oder ' +
       'Geld verlangt: geh bitte auf nichts ein.'
     );
   } catch { /* egal */ }
 
-  if (!schon) await meldeAnAdmins(ctx, h, text, melderName);
+  if (!schon) await meldeAnAdmins(ctx, h, text, melderName, meldungsId, istScreenshot);
   return true;
 }
 
 async function meldeAnAdmins(
-  ctx: Context, h: Herkunft, text: string, melderName: string | null
+  ctx: Context, h: Herkunft, text: string, melderName: string | null,
+  meldungsId: number | null = null, istScreenshot = false
 ): Promise<void> {
   const ziel = config.adminLogChat;
   if (!ziel || !ziel.trim()) return;
@@ -289,12 +297,14 @@ async function meldeAnAdmins(
       '   Das Konto ist daraus nicht bestimmbar. Der Bot kann hier von sich aus nichts tun.';
   } else if (h.art === 'kanal') {
     wer = `Kanal: ${h.name || h.id}`;
+  } else if (istScreenshot) {
+    wer = 'Screenshot (Konto daraus nicht automatisch bestimmbar — Konto-ID bitte mit angeben: /werbung M' + (meldungsId ?? '?') + ' <Konto-ID>)';
   } else {
     wer = 'Herkunft nicht erkennbar';
   }
 
   const zeilen = [
-    '[Shield][MELDUNG] Ein Mitglied meldet eine private Nachricht',
+    `[Shield][MELDUNG${meldungsId ? ' M' + meldungsId : ''}] Ein Mitglied meldet ${istScreenshot ? 'einen Screenshot' : 'eine private Nachricht'}`,
     '',
     `Gemeldet von: ${melder}  (Kennung ${ctx.from!.id})`,
     '',
@@ -304,11 +314,26 @@ async function meldeAnAdmins(
     text ? text.slice(0, 1500) : '(kein Text — Bild, Sprachnachricht o.ä.)',
     '',
     'Es wurde NICHTS automatisch gesperrt. Bitte schaut jemand darauf.',
+    meldungsId ? `Verwarnsystem: /verwarnen M${meldungsId} bzw. /werbung M${meldungsId} (Stufe 2)` : '',
   ];
 
   try {
-    await ctx.telegram.sendMessage(ziel, zeilen.join('\n'), {
-      disable_web_page_preview: true,
+    // Beleg: das Original (Bild/Weiterleitung) mit in den Admin-Chat legen und die Kopie merken.
+    if (meldungsId && ctx.message) {
+      try {
+        const kopie = await ctx.telegram.copyMessage(ziel, ctx.chat!.id, (ctx.message as any).message_id);
+        getDatabase().prepare('UPDATE meldungen SET beleg_kopie_msg_id = ? WHERE id = ?').run((kopie as any).message_id, meldungsId);
+      } catch { /* Spalte fehlt evtl. noch oder Kopie gesperrt — Meldung trotzdem */ }
+    }
+    const knoepfe = meldungsId && h.art === 'kennung'
+      ? { reply_markup: { inline_keyboard: [[
+          { text: '⚠️ Verwarnen', callback_data: `kv:v:${meldungsId}` },
+          { text: '📢 Werbung', callback_data: `kv:w:${meldungsId}` },
+          { text: '✖️ Verwerfen', callback_data: `kv:x:${meldungsId}` },
+        ]] } }
+      : {};
+    await ctx.telegram.sendMessage(ziel, zeilen.filter((z, i) => z !== '' || i < zeilen.length - 1).join('\n'), {
+      disable_web_page_preview: true, ...knoepfe,
     } as any);
   } catch (error: any) {
     console.error('[Meldeweg] Admin-Meldung fehlgeschlagen:', error?.message);

@@ -21,7 +21,8 @@
     "test:adminlog429": "ts-node scripts/test-admin-log-429.ts",
     "test:sperrsync": "ts-node scripts/test-sperrsync.ts",
     "test:kanalspam": "ts-node scripts/test-kanal-spam.ts",
-    "test": "npm run test:startup && npm run test:identity && npm run test:links && npm run test:profile && npm run test:copytrading && npm run test:cryptobuy && npm run test:otc && npm run test:fremdschrift && npm run test:adminlog429 && npm run test:sperrsync"
+    "test": "npm run test:startup && npm run test:identity && npm run test:links && npm run test:profile && npm run test:copytrading && npm run test:cryptobuy && npm run test:otc && npm run test:fremdschrift && npm run test:adminlog429 && npm run test:sperrsync && npm run test:kodex",
+    "test:kodex": "ts-node scripts/test-kodex.ts"
   },
   "keywords": [
     "telegram",
