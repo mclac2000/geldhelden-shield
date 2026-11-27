@@ -116,7 +116,7 @@ async function main(): Promise<void> {
   // 5. Admin / Team
   reset();
   await K.aufBeitritt(tg, '-1001', { id: 1, first_name: 'Marco' });
-  addTeamMember(6006, 1, 'test');
+  addTeamMember(6006, 1);
   await K.aufBeitritt(tg, '-1001', { id: 6006, first_name: 'Teamler' });
   leiter.add('-1001:5005');
   await K.aufBeitritt(tg, '-1001', { id: 5005, first_name: 'Gruppenleiter' });
