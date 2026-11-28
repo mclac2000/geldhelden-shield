@@ -8,6 +8,17 @@ Abnahme gegen echtes Telegram: `scripts/livetest-kodex.ts`.
   `meetup_group_mapping` oder Lokalgruppe (Köln und Umland, Raum Hannover, Pattaya). 48 Gruppen.
 - `KODEX_TESTCHAT=<chat_id>` — Testgruppe; Strafen wirken dort nur dort, Admins gelten als Mitglieder.
 
+## Beitritt per Beitrittsanfrage (seit 28.11.2026)
+- Je Meetup-Gruppe ein Einladungslink mit `creates_join_request` (Tabelle `kodex_einladung`). Eingetragen im
+  Meetup-Backend `wp_ghclub_meetups.telegram_url` und auf /freiheits-meetup (Sicherung vorher:
+  `~/_backups/vor-meetup-joinrequest-20261128-0155.sql` auf Hostpoint).
+- Anfrage -> Bot schreibt PRIVAT (Kodex-Knopf `kjr:`, anonym zusaetzlich Vorstellung) -> erst dann
+  `approveChatJoinRequest`. Bots/Gesperrte: abgelehnt. 48 Std. ohne Antwort: abgelehnt (Cron `kodex-anfragen`).
+- Gruppe bleibt still: keine Begruessung, „X ist beigetreten" wird geloescht.
+- Direktbeitritt (alte Links, oeffentlicher @Name ohne Anfrage): sofort stumm, Kodex privat bzw.
+  60-s-Hinweis mit Deep-Link `/start kx_<gruppe>`.
+- Alte Hauptlinks wurden NICHT widerrufen (stehen evtl. noch in alten Mails) — dafuer gibt es den Direktbeitritt-Weg.
+
 ## Kodex
 „Ich verkaufe oder vermittle in den Gruppen und per Privatnachricht an Mitglieder keine Investments bzw.
 Finanzprodukte und werbe nicht für eigene Angebote. Verstöße führen zum Ausschluss."
