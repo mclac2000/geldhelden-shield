@@ -737,6 +737,13 @@ bot.on('my_chat_member', async (ctx: Context) => {
 // src/usernameGate.ts.
 bot.on('chat_join_request', async (ctx: Context) => {
   try {
+    // Meetup-Gruppen: Kodex privat, Bot genehmigt erst nach Bestaetigung (src/meetupKodex.ts, seit 28.11.2026)
+    try {
+      const { aufBeitrittsanfrage } = await import('./meetupKodex');
+      if (await aufBeitrittsanfrage(ctx.telegram, (ctx as any).chatJoinRequest)) return;
+    } catch (kodexError: unknown) {
+      console.error('[Kodex] chat_join_request:', kodexError instanceof Error ? kodexError.message : String(kodexError));
+    }
     const { behandleBeitrittsanfrage } = await import('./usernameGate');
     await behandleBeitrittsanfrage(ctx);
   } catch (error: any) {
@@ -760,6 +767,14 @@ bot.on('new_chat_members', async (ctx: Context) => {
     } catch { /* darf den Beitritt nicht aufhalten */ }
 
     const newMembers = ctx.message.new_chat_members;
+
+    // Meetup-Gruppen bleiben still: die Beitrittsmeldung "X ist beigetreten" entfernen (src/meetupKodex.ts)
+    try {
+      const { istKodexGruppe } = await import('./meetupKodex');
+      if (istKodexGruppe(chat.id.toString())) {
+        ctx.telegram.deleteMessage(chat.id, ctx.message.message_id).catch(() => {});
+      }
+    } catch { /* darf den Beitritt nicht aufhalten */ }
 
     for (const member of newMembers) {
       const chatId = chat.id.toString();
@@ -2380,8 +2395,9 @@ bot.on('callback_query', async (ctx: Context) => {
     const queryId = ctx.callbackQuery.id;
 
     // Verhaltenskodex / Verwarnsystem (src/meetupKodex.ts)
-    if (data.startsWith('kodex_ja:') || data.startsWith('kv:')) {
-      const { behandleKodexKnopf, behandleMeldungsKnopf } = await import('./meetupKodex');
+    if (data.startsWith('kodex_ja:') || data.startsWith('kv:') || data.startsWith('kjr:')) {
+      const { behandleKodexKnopf, behandleMeldungsKnopf, behandlePrivatKnopf } = await import('./meetupKodex');
+      if (await behandlePrivatKnopf(ctx)) return;
       if (await behandleKodexKnopf(ctx)) return;
       if (await behandleMeldungsKnopf(ctx)) return;
     }
@@ -2874,6 +2890,12 @@ console.log('[Startup] DeletedAccount-Bereinigung gestartet (täglich 03:00 Berl
 // Der Lauf muss regelmäßig erfolgen, damit neu angelegte Gruppen automatisch auf
 // die Freigabeliste kommen und nicht als fremder Link gezählt werden.
 // Kodex: Erinnerung nach Ablauf der 14-Tage-Frist (einmal je Gruppe) und Aufraeumen alter Willkommens-Knoepfe
+registerCron('kodex-anfragen', '*/30 * * * *', async () => {
+  const { lehneAbgelaufeneAb } = await import('./meetupKodex');
+  const r = await lehneAbgelaufeneAb(bot.telegram);
+  if (r.abgelehnt || r.hinweise) console.log(`[Kodex] abgelaufene Anfragen abgelehnt: ${r.abgelehnt}, Hinweise entfernt: ${r.hinweise}`);
+});
+
 registerCron('kodex-erinnerung', '0 10 * * *', async () => {
   const { erinnereFaelligeAufrufe, raeumeAlteGatesAuf } = await import('./meetupKodex');
   const n = await erinnereFaelligeAufrufe(bot.telegram);

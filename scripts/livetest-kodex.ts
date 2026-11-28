@@ -42,33 +42,39 @@ async function main(): Promise<void> {
   const botMember: any = await tg.getChatMember(TESTCHAT, me.id);
   ok(botMember.status === 'administrator', `Bot ist Admin in der Testgruppe (${botMember.status})`);
 
-  // 1. Beitritt (Einschraenkung schlaegt bei einem Admin erwartbar fehl, Nachricht muss trotzdem kommen)
+  // 1. Direktbeitritt (Fallback): Einschraenkung schlaegt bei einem Admin erwartbar fehl; Kodex privat ODER 60-s-Hinweis
   await K.aufBeitritt(tg, TESTCHAT, marco);
   const db = getDatabase();
   let g = db.prepare('SELECT * FROM kodex_gate WHERE user_id = ? AND chat_id = ?').get(marco.id, TESTCHAT) as any;
-  ok(!!g?.gate_msg_id, 'Willkommensnachricht mit Kodex-Knopf gesendet');
-  ok(g?.anonym === 1, 'Konto "R" als anonym erkannt');
+  ok(!!g && g.anonym === 1, 'Direktbeitritt erfasst, Konto "R" als anonym erkannt');
+  if (g?.gate_msg_id) zuLoeschen.push(g.gate_msg_id);
 
-  // 2. Knopf (echtes editMessageText, answerCbQuery als Attrappe)
-  const antworten: any[] = [];
-  const ctxKnopf: any = {
-    from: marco, telegram: tg,
-    callbackQuery: { data: `kodex_ja:${marco.id}`, message: { chat: { id: Number(TESTCHAT) } } },
-    answerCbQuery: async (...a: any[]) => { antworten.push(a); },
-  };
-  await K.behandleKodexKnopf(ctxKnopf);
-  ok(K.hatKodexBestaetigt(marco.id), 'Kodex-Bestätigung gespeichert');
-  const url = antworten[0]?.[1]?.url || '';
-  ok(url.startsWith(`https://t.me/${me.username}?start=vs_`), 'Knopf öffnet den Privatchat zur Vorstellung: ' + url);
-
-  // 3. Vorstellung (ctx.reply als Attrappe, Freischaltung + Loeschen echt)
+  // 2. Knopf "Ich stimme zu" privat (Antworten als Attrappe) -> Vorstellung -> Freischaltung
   const replies: string[] = [];
   const priv = (text: string): any => ({ from: marco, chat: { id: marco.id, type: 'private' }, telegram: tg,
     message: { text }, reply: async (t: string) => { replies.push(t); return { message_id: 0 }; } });
-  ok(await K.behandleStartParameter(priv('/start ' + url.split('start=')[1])), '/start vs_… erkannt');
+  const knopf: any = { from: marco, telegram: tg, chat: { id: marco.id, type: 'private' },
+    callbackQuery: { data: 'kjr:' + TESTCHAT.replace('-', 'm'), message: { chat: { id: marco.id } } },
+    answerCbQuery: async () => true, editMessageReplyMarkup: async () => true, reply: async (t: string) => { replies.push(t); return { message_id: 0 }; } };
+  await K.behandlePrivatKnopf(knopf);
+  ok(K.hatKodexBestaetigt(marco.id), 'Kodex-Bestätigung (privat) gespeichert');
   ok(await K.behandlePrivatVorstellung(priv('Livetest: Marco, GeldHelden-Gründer')), 'Vorstellung angenommen');
   g = db.prepare('SELECT * FROM kodex_gate WHERE user_id = ? AND chat_id = ?').get(marco.id, TESTCHAT) as any;
-  ok(g?.status === 'frei' && !g?.gate_msg_id, 'Freigeschaltet, Willkommensnachricht gelöscht');
+  ok(g?.status === 'frei', 'Direktbeitritt freigeschaltet');
+
+  // 3. Beitrittsanfrage mit echtem Telegram: Link mit creates_join_request, Kodex privat an Marco, Genehmigen
+  const link: any = await tg.createChatInviteLink(TESTCHAT, { name: 'Livetest Anfrage', creates_join_request: true });
+  ok(!!link?.invite_link && link.creates_join_request === true, 'Einladungslink mit Beitrittsanfrage erzeugt');
+  db.prepare('DELETE FROM kodex_bestaetigung WHERE user_id = ?').run(marco.id);
+  const behandelt = await K.aufBeitrittsanfrage(tg, { chat: { id: Number(TESTCHAT) }, from: { id: marco.id, first_name: 'Marco', last_name: 'Livetest', username: 'mclac2000_test' }, user_chat_id: marco.id });
+  const an = db.prepare('SELECT * FROM kodex_anfrage WHERE user_id = ? AND chat_id = ?').get(marco.id, TESTCHAT) as any;
+  ok(behandelt && !!an, 'Anfrage erfasst (Status ' + an?.status + ')');
+  ok(an?.status === 'offen' || an?.status === 'dm_fehler', 'Kodex privat zugestellt bzw. als nicht zustellbar vermerkt: ' + an?.status);
+  if (an?.dm_msg_id) { try { await tg.deleteMessage(marco.id, an.dm_msg_id); } catch { /* egal */ } }
+  replies.length = 0;
+  await K.behandlePrivatKnopf(knopf);
+  ok(replies.some((r) => /nicht mehr offen|bereits|freigeschaltet|gehakt/.test(r)), 'Genehmigen gegen echtes Telegram verarbeitet: ' + replies[0]);
+  try { await tg.revokeChatInviteLink(TESTCHAT, link.invite_link); } catch { /* egal */ }
 
   // 4. Aufruf an Bestandsmitglieder
   const pin = await K.starteAufruf(tg, TESTCHAT);

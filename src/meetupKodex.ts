@@ -21,6 +21,11 @@
  *      Nachricht wird vorher in den Admin-Log weitergeleitet = gespeicherter Beleg) oder mit einer
  *      Meldungsnummer (M123) aus dem Meldeweg (weitergeleitete Privatnachricht / Screenshot).
  *
+ * SEIT 28.11.2026 LAEUFT ALLES PRIVAT: Beitritt per Telegram-Beitrittsanfrage (Links mit creates_join_request).
+ *   Der Bot schreibt dem Anfragenden privat (Kodex-Knopf, ggf. Vorstellung) und genehmigt erst danach;
+ *   nach 48 Std. ohne Antwort wird abgelehnt. In der Gruppe: keine Begruessung, Beitrittsmeldungen werden geloescht.
+ *   Direktbeitritt (alte Links): sofort stumm, Kodex privat bzw. 60-s-Hinweis mit Deep-Link (kx_).
+ *
  * Schalter (.env):  KODEX_AKTIV=1  -> alle Meetup-Gruppen.   KODEX_TESTCHAT=<chat_id> -> Testgruppe
  * (dort wirken Strafen NUR in der Testgruppe, nie global; Bot-Admins werden dort wie Mitglieder behandelt).
  */
@@ -96,6 +101,21 @@ export function stelleTabellenSicher(): void {
       aufgehoben_von INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_verwarnungen_user ON verwarnungen(user_id);
+    CREATE TABLE IF NOT EXISTS kodex_anfrage (
+      user_id INTEGER NOT NULL,
+      chat_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      dm_msg_id INTEGER,
+      anonym INTEGER NOT NULL DEFAULT 0,
+      name TEXT,
+      username TEXT,
+      vorstellung TEXT,
+      entschieden_at INTEGER,
+      grund TEXT,
+      PRIMARY KEY (user_id, chat_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_kodex_anfrage_status ON kodex_anfrage(status, created_at);
   `);
   // meldungen (aus meldeweg.ts) um Gruppen-Meldungen erweitern — idempotent.
   try {
@@ -291,6 +311,9 @@ export async function aufBeitritt(
   telegram: any, chatId: string,
   user: { id: number; first_name?: string; last_name?: string; username?: string; is_bot?: boolean }
 ): Promise<void> {
+  // Seit 28.11.2026: Normalweg ist die Beitrittsanfrage (siehe aufBeitrittsanfrage) — die Gruppe bleibt still.
+  // Hier landet nur, wer DIREKT beitritt (alte Links, oeffentlicher @Name ohne Anfrage): sofort stumm,
+  // Kodex privat; geht privat nicht, eine kurze Gruppennachricht mit Deep-Link, die sich nach 60 s loescht.
   try {
     if (!istKodexGruppe(chatId)) return;
     stelleTabellenSicher();
@@ -298,6 +321,11 @@ export async function aufBeitritt(
     if (shieldSperre(user.id)) return; // die Scam-Erkennung hat schon gehandelt
 
     const db = getDatabase();
+    // Ueber eine Beitrittsanfrage freigegeben -> alles erledigt.
+    const genehmigt = db.prepare("SELECT 1 FROM kodex_anfrage WHERE user_id = ? AND chat_id = ? AND status = 'genehmigt' AND entschieden_at > ?")
+      .get(user.id, chatId, Date.now() - 3 * 86400000);
+    if (genehmigt) return;
+
     const vorhanden = db.prepare('SELECT status, created_at FROM kodex_gate WHERE user_id = ? AND chat_id = ?')
       .get(user.id, chatId) as any;
     // new_chat_members und chat_member kommen beide -> nur einmal
@@ -316,40 +344,39 @@ export async function aufBeitritt(
     } catch (e: any) {
       console.log(`[Kodex] restrict ${user.id} in ${chatId} nicht moeglich: ${e?.message}`);
     }
-
-    const zeilen = [
-      `👋 Willkommen, ${erwaehnung(user)}!`,
-      '',
-      bestaetigt
-        ? 'Du hast unseren Verhaltenskodex schon bestätigt – danke!'
-        : 'Bevor du hier schreiben kannst, bestätige bitte kurz unseren Verhaltenskodex:',
-    ];
-    if (!bestaetigt) zeilen.push('', `<i>„${esc(KODEX_TEXT)}“</i>`);
-    if (anonym) {
-      zeilen.push('', 'Weil wir dein Profil noch nicht zuordnen können: Stell dich bitte ' + (bestaetigt ? '' : 'danach ') +
-        'kurz im Privatchat mit mir vor (Vorname und dein Bezug zu GeldHelden). Dann bist du sofort freigeschaltet.');
-    }
-    const bu = await botUsername(telegram);
-    const knopf = bestaetigt
-      ? Markup.inlineKeyboard([[Markup.button.url('👋 Kurz vorstellen', `https://t.me/${bu}?start=vs_${chatParam(chatId)}`)]])
-      : Markup.inlineKeyboard([[Markup.button.callback('✅ Ich bestätige den Kodex', `kodex_ja:${user.id}`)]]);
-
-    let gateMsg: number | null = null;
-    try {
-      const m = await telegram.sendMessage(chatId, zeilen.join('\n'), { parse_mode: 'HTML', ...knopf });
-      gateMsg = m.message_id;
-    } catch (e: any) {
-      console.error('[Kodex] Gate-Nachricht fehlgeschlagen:', e?.message);
-    }
-
     db.prepare(`
       INSERT INTO kodex_gate (user_id, chat_id, created_at, name, gate_msg_id, anonym, eingeschraenkt, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
       ON CONFLICT(user_id, chat_id) DO UPDATE SET created_at=excluded.created_at, name=excluded.name,
-        gate_msg_id=excluded.gate_msg_id, anonym=excluded.anonym, eingeschraenkt=excluded.eingeschraenkt,
+        gate_msg_id=NULL, anonym=excluded.anonym, eingeschraenkt=excluded.eingeschraenkt,
         status=excluded.status, freigegeben_at=NULL
-    `).run(user.id, chatId, Date.now(), nameVon(user), gateMsg, anonym ? 1 : 0, eingeschraenkt, bestaetigt ? 'kodex_ok' : 'offen');
-    console.log(`[Kodex][BEITRITT] user=${user.id} chat=${chatId} anonym=${anonym} bestaetigt=${bestaetigt} restrict=${eingeschraenkt}`);
+    `).run(user.id, chatId, Date.now(), nameVon(user), anonym ? 1 : 0, eingeschraenkt, bestaetigt ? 'kodex_ok' : 'offen');
+
+    // 1. Versuch: privat (klappt nur, wenn die Person den Bot schon einmal gestartet hat)
+    const titel = await gruppenTitel(telegram, chatId);
+    let privat = false;
+    try {
+      await sendeKodexPrivat(telegram, user.id, chatId, titel, bestaetigt, anonym);
+      privat = true;
+    } catch { /* noch nie gestartet -> Gruppenhinweis */ }
+
+    // 2. Sonst: kurze Gruppennachricht, loescht sich nach 60 s
+    if (!privat) {
+      const bu = await botUsername(telegram);
+      try {
+        const m = await telegram.sendMessage(chatId,
+          `👋 ${erwaehnung(user)}, bitte bestätige kurz unseren Verhaltenskodex im Privatchat mit mir – dann kannst du hier schreiben.`,
+          { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.url('📜 Kodex bestätigen', `https://t.me/${bu}?start=kx_${chatParam(chatId)}`)]]) });
+        db.prepare('UPDATE kodex_gate SET gate_msg_id = ? WHERE user_id = ? AND chat_id = ?').run(m.message_id, user.id, chatId);
+        setTimeout(() => {
+          telegram.deleteMessage(chatId, m.message_id).catch(() => {});
+          try { getDatabase().prepare('UPDATE kodex_gate SET gate_msg_id = NULL WHERE user_id = ? AND chat_id = ? AND gate_msg_id = ?').run(user.id, chatId, m.message_id); } catch { /* egal */ }
+        }, 60 * 1000);
+      } catch (e: any) {
+        console.error('[Kodex] Hinweis-Nachricht fehlgeschlagen:', e?.message);
+      }
+    }
+    console.log(`[Kodex][DIREKTBEITRITT] user=${user.id} chat=${chatId} anonym=${anonym} bestaetigt=${bestaetigt} restrict=${eingeschraenkt} privat=${privat}`);
   } catch (e: any) {
     console.error('[Kodex] aufBeitritt:', e?.message);
   }
@@ -428,38 +455,205 @@ export async function behandleKodexKnopf(ctx: Context): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// 3. Vorstellung im Privatchat  (/start vs_m100...)
+// 3. Alles Private: Beitrittsanfrage, Kodex-Knopf im Privatchat, Vorstellung  (seit 28.11.2026)
 // ---------------------------------------------------------------------------------------------
-function wartetAufVorstellung(userId: number): { chatId: string } | null {
-  const r = getDatabase().prepare(
-    "SELECT chat_id FROM kodex_gate WHERE user_id = ? AND status = 'warte_vorstellung' AND created_at > ? ORDER BY created_at DESC LIMIT 1"
-  ).get(userId, Date.now() - 7 * 86400000) as any;
-  return r ? { chatId: r.chat_id } : null;
+const ANFRAGE_FRIST_STD = 48;
+const titelCache = new Map<string, string>();
+async function gruppenTitel(telegram: any, chatId: string): Promise<string> {
+  if (titelCache.has(chatId)) return titelCache.get(chatId)!;
+  let t = '';
+  try { t = (getDatabase().prepare('SELECT title FROM groups WHERE chat_id = ?').get(chatId) as any)?.title || ''; } catch { /* egal */ }
+  if (!t) { try { t = (await telegram.getChat(chatId)).title || ''; } catch { /* egal */ } }
+  t = t || 'GeldHelden-Meetup';
+  titelCache.set(chatId, t);
+  return t;
 }
 
-/** /start mit Parameter vs_... true = erledigt. */
+/** Kodex (bzw. Vorstellungsbitte) privat schicken. Wirft, wenn Telegram die Nachricht nicht zulaesst. */
+async function sendeKodexPrivat(telegram: any, privatChat: number, chatId: string, titel: string, bestaetigt: boolean, anonym: boolean): Promise<number> {
+  if (bestaetigt && anonym) {
+    const m = await telegram.sendMessage(privatChat,
+      `👋 Schön, dass du zu <b>${esc(titel)}</b> möchtest!\n\nDen Verhaltenskodex hast du schon bestätigt – danke. ` +
+      'Da wir dein Profil noch nicht zuordnen können: Schreib mir bitte kurz <b>deinen Vornamen und deinen Bezug zu GeldHelden</b> ' +
+      '(z. B. Newsletter, Webinar, Club, Empfehlung von …). Dann bist du sofort drin.', { parse_mode: 'HTML' });
+    return m.message_id;
+  }
+  const m = await telegram.sendMessage(privatChat,
+    `👋 Schön, dass du zu <b>${esc(titel)}</b> möchtest!\n\n` +
+    'In allen GeldHelden-Meetup-Gruppen gilt ein kurzer Verhaltenskodex:\n\n' +
+    `<i>„${esc(KODEX_TEXT)}“</i>\n\n` +
+    (anonym ? 'Nach der Bestätigung bitte ich dich noch kurz um deinen Vornamen und deinen Bezug zu GeldHelden.\n\n' : '') +
+    'Einmal bestätigen reicht für alle Meetup-Gruppen.',
+    { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('✅ Ich stimme zu', `kjr:${chatParam(chatId)}`)]]) });
+  return m.message_id;
+}
+
+function istGesperrt(userId: number): boolean {
+  const db = getDatabase();
+  if (db.prepare('SELECT 1 FROM blacklist WHERE user_id = ?').get(userId)) return true;
+  const u = db.prepare('SELECT status FROM users WHERE user_id = ?').get(userId) as any;
+  return u?.status === 'banned';
+}
+
+/** chat_join_request. true = von hier behandelt (Kodex-Gruppe). */
+export async function aufBeitrittsanfrage(telegram: any, anfrage: any): Promise<boolean> {
+  const chatId = String(anfrage?.chat?.id ?? '');
+  const user = anfrage?.from;
+  if (!chatId || !user || !istKodexGruppe(chatId)) return false;
+  stelleTabellenSicher();
+  const db = getDatabase();
+  const ablehnen = async (grund: string) => {
+    try { await telegram.declineChatJoinRequest(chatId, user.id); } catch (e: any) { console.log('[Kodex] decline:', e?.message); }
+    db.prepare(`INSERT INTO kodex_anfrage (user_id, chat_id, created_at, status, entschieden_at, grund) VALUES (?, ?, ?, 'abgelehnt', ?, ?)
+      ON CONFLICT(user_id, chat_id) DO UPDATE SET status='abgelehnt', entschieden_at=excluded.entschieden_at, grund=excluded.grund`)
+      .run(user.id, chatId, Date.now(), Date.now(), grund);
+    console.log(`[Kodex][ANFRAGE-ABGELEHNT] user=${user.id} chat=${chatId} ${grund}`);
+  };
+  const genehmigen = async (grund: string) => {
+    db.prepare(`INSERT INTO kodex_anfrage (user_id, chat_id, created_at, status, entschieden_at, grund) VALUES (?, ?, ?, 'genehmigt', ?, ?)
+      ON CONFLICT(user_id, chat_id) DO UPDATE SET status='genehmigt', entschieden_at=excluded.entschieden_at, grund=excluded.grund`)
+      .run(user.id, chatId, Date.now(), Date.now(), grund);
+    try { await telegram.approveChatJoinRequest(chatId, user.id); } catch (e: any) { console.log('[Kodex] approve:', e?.message); }
+    console.log(`[Kodex][ANFRAGE-GENEHMIGT] user=${user.id} chat=${chatId} ${grund}`);
+  };
+
+  if (user.is_bot) { await ablehnen('Bot'); return true; }
+  if (istGesperrt(user.id)) { await ablehnen('steht auf der Sperrliste'); return true; }
+  if (await geschuetzt(telegram, chatId, user.id)) { await genehmigen('Admin/Team'); return true; }
+
+  let hatFoto: boolean | null = null;
+  try { hatFoto = (await telegram.getUserProfilePhotos(user.id, 0, 1)).total_count > 0; } catch { hatFoto = null; }
+  const anonym = istAnonym(user, hatFoto) && !hatVorstellung(user.id);
+  const bestaetigt = hatKodexBestaetigt(user.id);
+  if (bestaetigt && !anonym) { await genehmigen('Kodex schon bestätigt'); return true; }
+
+  const privatChat = Number(anfrage.user_chat_id || user.id);
+  let dm: number | null = null;
+  let status = bestaetigt ? 'warte_vorstellung' : 'offen';
+  try {
+    dm = await sendeKodexPrivat(telegram, privatChat, chatId, await gruppenTitel(telegram, chatId), bestaetigt, anonym);
+  } catch (e: any) {
+    status = 'dm_fehler';
+    console.log(`[Kodex] Privatnachricht an Anfragenden ${user.id} fehlgeschlagen: ${e?.message}`);
+  }
+  db.prepare(`INSERT INTO kodex_anfrage (user_id, chat_id, created_at, status, dm_msg_id, anonym, name, username)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, chat_id) DO UPDATE SET created_at=excluded.created_at, status=excluded.status, dm_msg_id=excluded.dm_msg_id,
+      anonym=excluded.anonym, name=excluded.name, username=excluded.username, entschieden_at=NULL, grund=NULL, vorstellung=NULL`)
+    .run(user.id, chatId, Date.now(), status, dm, anonym ? 1 : 0, nameVon(user), user.username ?? null);
+  console.log(`[Kodex][ANFRAGE] user=${user.id} chat=${chatId} anonym=${anonym} bestaetigt=${bestaetigt} status=${status}`);
+  return true;
+}
+
+/** Offene Vorgaenge einer Person: zuerst Beitrittsanfrage, sonst Direktbeitritt (Gate). */
+function offeneAnfrage(userId: number, chatId?: string): any {
+  const db = getDatabase();
+  return chatId
+    ? db.prepare("SELECT * FROM kodex_anfrage WHERE user_id = ? AND chat_id = ? AND status IN ('offen','warte_vorstellung','dm_fehler')").get(userId, chatId)
+    : db.prepare("SELECT * FROM kodex_anfrage WHERE user_id = ? AND status IN ('offen','warte_vorstellung','dm_fehler') ORDER BY created_at DESC LIMIT 1").get(userId);
+}
+function offenesGate(userId: number, chatId?: string): any {
+  const db = getDatabase();
+  return chatId
+    ? db.prepare("SELECT * FROM kodex_gate WHERE user_id = ? AND chat_id = ? AND status <> 'frei'").get(userId, chatId)
+    : db.prepare("SELECT * FROM kodex_gate WHERE user_id = ? AND status <> 'frei' ORDER BY created_at DESC LIMIT 1").get(userId);
+}
+
+/** Abschluss: Anfrage genehmigen bzw. Direktbeitritt freischalten. Liefert Text fuer die Person. */
+async function abschliessen(telegram: any, userId: number, chatId: string, vorstellung: string | null): Promise<string> {
+  const db = getDatabase();
+  const a = offeneAnfrage(userId, chatId);
+  if (a) {
+    let fehler: string | null = null;
+    try { await telegram.approveChatJoinRequest(chatId, userId); } catch (e: any) { fehler = String(e?.message || e); }
+    if (fehler && !/USER_ALREADY_PARTICIPANT/i.test(fehler)) {
+      db.prepare("UPDATE kodex_anfrage SET vorstellung = COALESCE(?, vorstellung), grund = ? WHERE user_id = ? AND chat_id = ?").run(vorstellung, 'approve: ' + fehler, userId, chatId);
+      console.log(`[Kodex] approve ${userId} in ${chatId} fehlgeschlagen: ${fehler}`);
+      if (/HIDE_REQUESTER_MISSING|REQUEST.*NOT|not found/i.test(fehler)) {
+        db.prepare("UPDATE kodex_anfrage SET status='abgelehnt', entschieden_at=? WHERE user_id = ? AND chat_id = ?").run(Date.now(), userId, chatId);
+        return 'Danke! Deine Beitrittsanfrage ist leider nicht mehr offen. Tippe einfach noch einmal auf den Einladungslink – dann geht es sofort.';
+      }
+      return 'Danke! Beim Freischalten hat etwas gehakt – ein Admin schaut gleich drauf.';
+    }
+    db.prepare("UPDATE kodex_anfrage SET status='genehmigt', entschieden_at=?, vorstellung=COALESCE(?, vorstellung), grund='Kodex bestätigt' WHERE user_id = ? AND chat_id = ?")
+      .run(Date.now(), vorstellung, userId, chatId);
+    if (vorstellung) {
+      // Vorstellung merken, damit das Konto beim naechsten Mal nicht wieder als anonym gilt
+      db.prepare(`INSERT INTO kodex_gate (user_id, chat_id, created_at, status, vorstellung, freigegeben_at) VALUES (?, ?, ?, 'frei', ?, ?)
+        ON CONFLICT(user_id, chat_id) DO UPDATE SET vorstellung=excluded.vorstellung`).run(userId, chatId, Date.now(), vorstellung, Date.now());
+    }
+    console.log(`[Kodex][ANFRAGE-GENEHMIGT] user=${userId} chat=${chatId} (Kodex privat bestätigt)`);
+    return `Danke! Du bist jetzt in „${await gruppenTitel(telegram, chatId)}“ freigeschaltet. Willkommen! 🎉`;
+  }
+  if (offenesGate(userId, chatId)) {
+    const erg = await freischalten(telegram, userId, chatId, vorstellung);
+    if (erg === 'frei') return `Danke! Du kannst jetzt in „${await gruppenTitel(telegram, chatId)}“ schreiben. Willkommen! 🎉`;
+    await adminLog(telegram, `🛡️ Kodex privat bestätigt, Schreibrecht NICHT zurückgegeben (${esc(erg)}): <code>${userId}</code> in <code>${chatId}</code>`);
+    return 'Danke! Ein Admin schaut kurz drauf und schaltet dich frei.';
+  }
+  return 'Alles gut – du bist bereits freigeschaltet.';
+}
+
+function istAnonymeVorgang(userId: number, chatId: string): boolean {
+  const a = offeneAnfrage(userId, chatId);
+  if (a) return !!a.anonym && !a.vorstellung;
+  const g = offenesGate(userId, chatId);
+  return !!g && !!g.anonym && !g.vorstellung;
+}
+
+/** Knopf "Ich stimme zu" im Privatchat: kjr:<m100…> */
+export async function behandlePrivatKnopf(ctx: Context): Promise<boolean> {
+  const cq: any = ctx.callbackQuery;
+  if (!cq || typeof cq.data !== 'string' || !cq.data.startsWith('kjr:') || !ctx.from) return false;
+  stelleTabellenSicher();
+  const chatId = cq.data.slice(4).replace(/^m/, '-');
+  const uid = ctx.from.id;
+  merkeBestaetigung(uid, chatId, 'privat');
+  const db = getDatabase();
+  if (!offeneAnfrage(uid, chatId) && !offenesGate(uid, chatId)) {
+    await ctx.answerCbQuery('Danke, bestätigt ✅').catch(() => {});
+    try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch { /* egal */ }
+    return true;
+  }
+  if (istAnonymeVorgang(uid, chatId)) {
+    db.prepare("UPDATE kodex_anfrage SET status='warte_vorstellung' WHERE user_id = ? AND chat_id = ? AND status IN ('offen','dm_fehler')").run(uid, chatId);
+    db.prepare("UPDATE kodex_gate SET status='warte_vorstellung' WHERE user_id = ? AND chat_id = ? AND status <> 'frei'").run(uid, chatId);
+    await ctx.answerCbQuery('Danke! ✅').catch(() => {});
+    try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch { /* egal */ }
+    await ctx.reply('Danke für deine Bestätigung! ✅\n\nJetzt noch kurz: Wie heißt du (Vorname genügt) und was ist dein Bezug zu GeldHelden ' +
+      '(z. B. Newsletter, Webinar, Club, Empfehlung von …)? Schreib es mir einfach in einer Nachricht.');
+    return true;
+  }
+  const text = await abschliessen(ctx.telegram, uid, chatId, null);
+  await ctx.answerCbQuery('Danke, bestätigt ✅').catch(() => {});
+  try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch { /* egal */ }
+  await ctx.reply(text);
+  return true;
+}
+
+/** /start vs_… (alt) und /start kx_… (Direktbeitritt). true = erledigt. */
 export async function behandleStartParameter(ctx: Context): Promise<boolean> {
   const text: string = (ctx.message as any)?.text || '';
-  const m = text.match(/^\/start(?:@\w+)?\s+vs_(m?\d+)/);
+  const m = text.match(/^\/start(?:@\w+)?\s+(?:vs|kx)_(m?\d+)/);
   if (!m || ctx.chat?.type !== 'private' || !ctx.from) return false;
   stelleTabellenSicher();
   const chatId = m[1].replace(/^m/, '-');
-  const db = getDatabase();
-  const g = db.prepare('SELECT * FROM kodex_gate WHERE user_id = ? AND chat_id = ?').get(ctx.from.id, chatId) as any;
-  if (!g || g.status === 'frei') {
+  const uid = ctx.from.id;
+  if (!offeneAnfrage(uid, chatId) && !offenesGate(uid, chatId)) {
     await ctx.reply('Alles gut – du bist bereits freigeschaltet. Viel Freude in der Gruppe!');
     return true;
   }
-  if (!hatKodexBestaetigt(ctx.from.id)) {
-    await ctx.reply('Bitte bestätige zuerst in der Gruppe den Verhaltenskodex (Knopf unter der Willkommensnachricht). Danach geht es hier weiter.');
+  const bestaetigt = hatKodexBestaetigt(uid);
+  const anonym = istAnonymeVorgang(uid, chatId);
+  if (bestaetigt && !anonym) {
+    await ctx.reply(await abschliessen(ctx.telegram, uid, chatId, null));
     return true;
   }
-  db.prepare("UPDATE kodex_gate SET status='warte_vorstellung' WHERE user_id=? AND chat_id=?").run(ctx.from.id, chatId);
-  await ctx.reply(
-    'Schön, dass du da bist! 🙂\n\nBitte schreib mir in einer Nachricht:\n' +
-    '• deinen Vornamen (gern auch Nachnamen)\n• deinen Bezug zu GeldHelden (z. B. Newsletter, Webinar, Club, Empfehlung von …)\n\n' +
-    'Danach schalte ich dich in der Gruppe frei.'
-  );
+  if (bestaetigt && anonym) {
+    getDatabase().prepare("UPDATE kodex_gate SET status='warte_vorstellung' WHERE user_id = ? AND chat_id = ? AND status <> 'frei'").run(uid, chatId);
+    getDatabase().prepare("UPDATE kodex_anfrage SET status='warte_vorstellung' WHERE user_id = ? AND chat_id = ? AND status IN ('offen','dm_fehler')").run(uid, chatId);
+  }
+  await sendeKodexPrivat(ctx.telegram, ctx.chat.id, chatId, await gruppenTitel(ctx.telegram, chatId), bestaetigt, anonym);
   return true;
 }
 
@@ -467,8 +661,12 @@ export async function behandleStartParameter(ctx: Context): Promise<boolean> {
 export async function behandlePrivatVorstellung(ctx: Context): Promise<boolean> {
   if (ctx.chat?.type !== 'private' || !ctx.from) return false;
   stelleTabellenSicher();
-  const w = wartetAufVorstellung(ctx.from.id);
-  if (!w) return false;
+  const db = getDatabase();
+  const uid = ctx.from.id;
+  const a = db.prepare("SELECT chat_id FROM kodex_anfrage WHERE user_id = ? AND status = 'warte_vorstellung' ORDER BY created_at DESC LIMIT 1").get(uid) as any;
+  const g = a ? null : db.prepare("SELECT chat_id FROM kodex_gate WHERE user_id = ? AND status = 'warte_vorstellung' AND created_at > ? ORDER BY created_at DESC LIMIT 1").get(uid, Date.now() - 7 * 86400000) as any;
+  const chatId: string | null = a?.chat_id ?? g?.chat_id ?? null;
+  if (!chatId) return false;
   const msg: any = ctx.message;
   const text: string = msg?.text || '';
   if (!text || text.startsWith('/') || msg.forward_origin || msg.forward_from || msg.forward_sender_name) return false;
@@ -477,19 +675,34 @@ export async function behandlePrivatVorstellung(ctx: Context): Promise<boolean> 
     return true;
   }
   const vorstellung = text.slice(0, 500);
-  const erg = await freischalten(ctx.telegram, ctx.from.id, w.chatId, vorstellung);
-  if (erg === 'frei') {
-    await ctx.reply('Danke! Du bist jetzt freigeschaltet und kannst in der Gruppe schreiben. Willkommen! 🎉');
-    try {
-      await ctx.telegram.sendMessage(w.chatId,
-        `✅ ${erwaehnung(ctx.from)} ist jetzt freigeschaltet und stellt sich kurz vor:\n<i>„${esc(vorstellung)}“</i>`,
-        { parse_mode: 'HTML' });
-    } catch { /* egal */ }
-  } else {
-    await ctx.reply('Danke! Deine Vorstellung ist angekommen. Ein Admin schaut kurz drauf.');
-    await adminLog(ctx.telegram, `🛡️ Vorstellung erhalten, Schreibrecht NICHT zurückgegeben (${esc(erg)}): ${erwaehnung(ctx.from)} in <code>${w.chatId}</code>\n<i>${esc(vorstellung)}</i>`);
-  }
+  await ctx.reply(await abschliessen(ctx.telegram, uid, chatId, vorstellung));
+  await adminLog(ctx.telegram, `👋 Vorstellung (anonymes Konto) für <b>${esc(await gruppenTitel(ctx.telegram, chatId))}</b>: ${erwaehnung(ctx.from)} <code>${uid}</code>\n<i>${esc(vorstellung)}</i>`);
   return true;
+}
+
+/** Alle 30 Min.: Anfragen ohne Antwort nach 48 Std. ablehnen; Hinweis-Nachrichten > 2 Min. entfernen. */
+export async function lehneAbgelaufeneAb(telegram: any): Promise<{ abgelehnt: number; hinweise: number }> {
+  stelleTabellenSicher();
+  const db = getDatabase();
+  const alt = db.prepare("SELECT * FROM kodex_anfrage WHERE status IN ('offen','warte_vorstellung','dm_fehler') AND created_at < ?")
+    .all(Date.now() - ANFRAGE_FRIST_STD * 3600000) as any[];
+  for (const a of alt) {
+    try { await telegram.declineChatJoinRequest(a.chat_id, a.user_id); } catch { /* evtl. schon erledigt */ }
+    db.prepare("UPDATE kodex_anfrage SET status='abgelehnt', entschieden_at=?, grund='48 Std. ohne Bestätigung' WHERE user_id = ? AND chat_id = ?").run(Date.now(), a.user_id, a.chat_id);
+    if (a.status !== 'dm_fehler') {
+      try {
+        await telegram.sendMessage(a.user_id, 'Deine Beitrittsanfrage ist abgelaufen, weil keine Bestätigung kam. ' +
+          'Kein Problem: Tippe einfach noch einmal auf den Einladungslink, dann geht es von vorn los.');
+      } catch { /* egal */ }
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  const hinweise = db.prepare("SELECT * FROM kodex_gate WHERE gate_msg_id IS NOT NULL AND created_at < ?").all(Date.now() - 2 * 60000) as any[];
+  for (const g of hinweise) {
+    try { await telegram.deleteMessage(g.chat_id, g.gate_msg_id); } catch { /* egal */ }
+    db.prepare('UPDATE kodex_gate SET gate_msg_id = NULL WHERE user_id = ? AND chat_id = ?').run(g.user_id, g.chat_id);
+  }
+  return { abgelehnt: alt.length, hinweise: hinweise.length };
 }
 
 // ---------------------------------------------------------------------------------------------

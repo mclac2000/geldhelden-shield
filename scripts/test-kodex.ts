@@ -6,7 +6,9 @@
  *   1. Gruppenauswahl: Meetup-Titel, Mapping, Lokalgruppen ja; Hauptchat, Inner Circle, aufgeloeste nein,
  *   2. ohne KODEX_AKTIV wirkt nichts ausser der Testgruppe,
  *   3. anonym-Erkennung ("R", Emoji, ohne @Name und ohne Bild),
- *   4. Beitritt: Einschraenkung + Knopf; zweites Ereignis (chat_member) erzeugt KEIN zweites Gate,
+ *   4. Direktbeitritt: stumm + Kodex privat (sonst 60-s-Hinweis mit kx_-Link); kein zweites Gate,
+ *  8a. Beitrittsanfragen: Bots/Gesperrte abgelehnt, Bestaetigte sofort genehmigt, sonst Kodex privat ->
+ *      genehmigt erst nach Knopf (anonym: nach Vorstellung), nach 48 Std. abgelehnt,
  *   5. Admins/Team werden nie eingeschraenkt (ausser in der Testgruppe),
  *   6. Knopf eines Fremden wirkt nicht; eigener Knopf -> Bestaetigung + Freischaltung + Gate geloescht,
  *   7. anonym: nach Knopf noch KEIN Schreibrecht, erst nach Vorstellung im Privatchat,
@@ -29,7 +31,7 @@ process.env.ADMIN_IDS = '1';
 process.env.KODEX_AKTIV = '';
 process.env.KODEX_TESTCHAT = '-100777';
 
-import { getDatabase, addTeamMember } from '../src/db';
+import { getDatabase, addTeamMember, addToBlacklist } from '../src/db';
 import * as K from '../src/meetupKodex';
 
 const fehler: string[] = [];
@@ -40,12 +42,14 @@ type Aufruf = { m: string; a: any[] };
 const aufrufe: Aufruf[] = [];
 let msgId = 100;
 const leiter = new Set<string>(); // `${chat}:${user}`
+const dmGesperrt = new Set<number>();
 const tg: any = new Proxy({}, {
   get: (_t, name: string) => async (...a: any[]) => {
     aufrufe.push({ m: name, a });
     if (name === 'getMe') return { id: 42, username: 'testbot' };
     if (name === 'getChatMember') return { status: leiter.has(`${a[0]}:${a[1]}`) ? 'administrator' : 'member' };
     if (name === 'getUserProfilePhotos') return { total_count: a[0] === 3003 ? 0 : 1 };
+    if (name === 'sendMessage' && dmGesperrt.has(a[0])) throw new Error('403: Forbidden: bot can\'t initiate conversation with a user');
     if (name === 'sendMessage' || name === 'forwardMessage' || name === 'copyMessage') return { message_id: ++msgId };
     return true;
   },
@@ -59,6 +63,13 @@ function ctxKnopf(from: any, chatId: string, data: string): any {
     from, telegram: tg, callbackQuery: { data, message: { chat: { id: Number(chatId) } } },
     answerCbQuery: async (...a: any[]) => { antworten.push(a); }, antworten,
     editMessageReplyMarkup: async () => true,
+  };
+}
+function ctxPrivKnopf(from: any, data: string): any {
+  return {
+    from, telegram: tg, chat: { id: from.id, type: 'private' }, callbackQuery: { data, message: { chat: { id: from.id } } },
+    answerCbQuery: async () => true, editMessageReplyMarkup: async () => true,
+    reply: async () => ({ message_id: ++msgId }),
   };
 }
 function ctxText(from: any, chat: any, text: string, reply?: any): any {
@@ -105,13 +116,22 @@ async function main(): Promise<void> {
   pruefe(!K.istAnonym({ first_name: 'Ruslan' }, true), '3: Name + Bild = nicht anonym');
   pruefe(!K.istAnonym({ first_name: 'Ruslan', username: 'ruslan_x' }, false), '3: Name + @Name = nicht anonym');
 
-  // 4. Beitritt, doppeltes Ereignis
+  // 4. Direktbeitritt (Fallback): stumm + Kodex PRIVAT, keine Gruppennachricht; doppeltes Ereignis -> einmal
   reset();
   const anna = { id: 2001, first_name: 'Anna', last_name: 'Muster', username: 'anna' };
   await K.aufBeitritt(tg, '-1001', anna);
   await K.aufBeitritt(tg, '-1001', anna);
   pruefe(zaehle('restrictChatMember') === 1, '4: genau eine Einschraenkung erwartet, war ' + zaehle('restrictChatMember'));
-  pruefe(zaehle('sendMessage', (a) => a[0] === '-1001') === 1, '4: genau eine Willkommensnachricht erwartet');
+  pruefe(zaehle('sendMessage', (a) => a[0] === 2001) === 1, '4: Kodex muss genau einmal privat kommen');
+  pruefe(zaehle('sendMessage', (a) => String(a[0]) === '-1001') === 0, '4: keine Nachricht in der Gruppe, wenn privat moeglich');
+
+  // 4b. Direktbeitritt, privat gesperrt -> kurze Gruppennachricht mit Deep-Link kx_
+  reset();
+  dmGesperrt.add(2002);
+  await K.aufBeitritt(tg, '-1001', { id: 2002, first_name: 'Bob', username: 'bob' });
+  const hinweis = aufrufe.find((x) => x.m === 'sendMessage' && String(x.a[0]) === '-1001');
+  pruefe(!!hinweis && JSON.stringify(hinweis.a[2]).includes('start=kx_m1001'), '4b: Gruppenhinweis mit Deep-Link kx_ fehlt');
+  dmGesperrt.delete(2002);
 
   // 5. Admin / Team
   reset();
@@ -124,38 +144,82 @@ async function main(): Promise<void> {
   await K.aufBeitritt(tg, '-100777', { id: 1, first_name: 'Marco', username: 'mclac' });
   pruefe(zaehle('restrictChatMember') === 1, '5: in der Testgruppe wird auch der Admin behandelt wie ein Mitglied');
 
-  // 6. Knopf
+  // 6. Knopf "Ich stimme zu" privat -> Bestaetigung + Freischaltung
   reset();
-  const fremd = ctxKnopf({ id: 2002, first_name: 'Bob' }, '-1001', 'kodex_ja:2001');
-  await K.behandleKodexKnopf(fremd);
-  pruefe(!K.hatKodexBestaetigt(2002) && zaehle('restrictChatMember') === 0, '6: fremder Knopf darf nichts bewirken');
-  const eigen = ctxKnopf(anna, '-1001', 'kodex_ja:2001');
-  await K.behandleKodexKnopf(eigen);
+  const privKnopf = ctxPrivKnopf(anna, 'kjr:m1001');
+  await K.behandlePrivatKnopf(privKnopf);
   pruefe(K.hatKodexBestaetigt(2001), '6: Bestaetigung fehlt');
   pruefe(zaehle('restrictChatMember', (a) => a[2]?.permissions?.can_send_messages === true) === 1, '6: Freischaltung fehlt');
-  pruefe(zaehle('deleteMessage') === 1, '6: Willkommensnachricht nicht geloescht');
+  // Fremder Knopf in der Gruppe (alte Begruessungen) wirkt nicht
+  reset();
+  const fremd = ctxKnopf({ id: 2009, first_name: 'Fremd' }, '-1001', 'kodex_ja:2001');
+  await K.behandleKodexKnopf(fremd);
+  pruefe(!K.hatKodexBestaetigt(2009), '6: fremder Gruppenknopf darf nichts bewirken');
 
-  // 7. anonym
+  // 7. anonym, Direktbeitritt: nach Knopf noch KEIN Schreibrecht, erst nach Vorstellung
   reset();
   const r = { id: 3003, first_name: 'R' };
   await K.aufBeitritt(tg, '-1002', r);
-  await K.behandleKodexKnopf(ctxKnopf(r, '-1002', 'kodex_ja:3003'));
+  await K.behandlePrivatKnopf(ctxPrivKnopf(r, 'kjr:m1002'));
   pruefe(zaehle('restrictChatMember', (a) => a[2]?.permissions?.can_send_messages === true) === 0, '7: anonym darf nach Knopf noch nicht schreiben');
-  const start = ctxText(r, { id: 3003, type: 'private' }, '/start vs_m1002');
-  pruefe(await K.behandleStartParameter(start), '7: /start vs_ nicht erkannt');
-  const kurz = ctxText(r, { id: 3003, type: 'private' }, 'hi');
-  await K.behandlePrivatVorstellung(kurz);
+  await K.behandlePrivatVorstellung(ctxText(r, { id: 3003, type: 'private' }, 'hi'));
   pruefe(zaehle('restrictChatMember', (a) => a[2]?.permissions?.can_send_messages === true) === 0, '7: zu kurze Vorstellung darf nicht freischalten');
-  const vs = ctxText(r, { id: 3003, type: 'private' }, 'Ich bin Rainer, kenne GeldHelden aus dem Newsletter');
-  pruefe(await K.behandlePrivatVorstellung(vs), '7: Vorstellung nicht angenommen');
+  pruefe(await K.behandlePrivatVorstellung(ctxText(r, { id: 3003, type: 'private' }, 'Ich bin Rainer, kenne GeldHelden aus dem Newsletter')), '7: Vorstellung nicht angenommen');
   pruefe(zaehle('restrictChatMember', (a) => a[2]?.permissions?.can_send_messages === true) === 1, '7: nach Vorstellung keine Freischaltung');
-  const danach = ctxText(r, { id: 3003, type: 'private' }, 'noch eine Nachricht');
-  pruefe(!(await K.behandlePrivatVorstellung(danach)), '7: nach Freischaltung darf der Privatchat wieder normal laufen');
+  pruefe(zaehle('sendMessage', (a) => String(a[0]) === '-1002') === 0, '7: keine Vorstellungs-Nachricht in der Gruppe');
+  pruefe(!(await K.behandlePrivatVorstellung(ctxText(r, { id: 3003, type: 'private' }, 'noch eine Nachricht'))), '7: danach muss der Privatchat wieder normal laufen');
 
-  // 8. schon bestaetigt
+  // 8. schon bestaetigt -> beim naechsten Direktbeitritt nichts
   reset();
   await K.aufBeitritt(tg, '-1005', anna);
   pruefe(zaehle('restrictChatMember') === 0, '8: bereits bestaetigt -> kein Gate in weiterer Gruppe');
+
+  // 8a. BEITRITTSANFRAGEN
+  reset();
+  const anfrage = (u: any, chat = '-1001') => ({ chat: { id: Number(chat) }, from: u, user_chat_id: u.id, date: 0 });
+  pruefe(!(await K.aufBeitrittsanfrage(tg, anfrage({ id: 7001, first_name: 'Gast' }, '-1003'))), '8a: Nicht-Meetup-Gruppe darf nicht behandelt werden');
+  await K.aufBeitrittsanfrage(tg, anfrage({ id: 7002, first_name: 'Spam', is_bot: true }));
+  pruefe(zaehle('declineChatJoinRequest', (a) => a[1] === 7002) === 1, '8a: Bot-Anfrage muss abgelehnt werden');
+  neuerUser(7003); addToBlacklist(7003, 0, 'Betrug');
+  await K.aufBeitrittsanfrage(tg, anfrage({ id: 7003, first_name: 'Betrueger' }));
+  pruefe(zaehle('declineChatJoinRequest', (a) => a[1] === 7003) === 1, '8a: gesperrtes Konto muss abgelehnt werden');
+  await K.aufBeitrittsanfrage(tg, anfrage(anna, '-1002'));
+  pruefe(zaehle('approveChatJoinRequest', (a) => a[1] === 2001) === 1, '8a: bestaetigtes Konto sofort genehmigen');
+
+  reset();
+  const neu = { id: 7004, first_name: 'Neu', last_name: 'Mitglied', username: 'neu_m' };
+  await K.aufBeitrittsanfrage(tg, anfrage(neu));
+  const dm = aufrufe.find((x) => x.m === 'sendMessage' && x.a[0] === 7004);
+  pruefe(!!dm && JSON.stringify(dm.a[2]).includes('kjr:m1001'), '8a: Kodex privat mit Knopf fehlt');
+  pruefe(zaehle('approveChatJoinRequest') === 0, '8a: vor Bestaetigung darf nicht genehmigt werden');
+  pruefe(zaehle('sendMessage', (a) => String(a[0]) === '-1001') === 0, '8a: keine Gruppennachricht bei Anfrage');
+  await K.behandlePrivatKnopf(ctxPrivKnopf(neu, 'kjr:m1001'));
+  pruefe(zaehle('approveChatJoinRequest', (a) => a[1] === 7004) === 1, '8a: nach Knopf genehmigen');
+  // danach Beitritt -> kein Gate mehr
+  reset();
+  await K.aufBeitritt(tg, '-1001', neu);
+  pruefe(zaehle('restrictChatMember') === 0 && zaehle('sendMessage') === 0, '8a: nach genehmigter Anfrage kein Gate beim Beitritt');
+
+  // anonyme Anfrage: Knopf -> Vorstellung -> genehmigen
+  reset();
+  const anon = { id: 3003 + 5000, first_name: 'X' };
+  await K.aufBeitrittsanfrage(tg, anfrage(anon));
+  await K.behandlePrivatKnopf(ctxPrivKnopf(anon, 'kjr:m1001'));
+  pruefe(zaehle('approveChatJoinRequest') === 0, '8a: anonym nach Knopf noch nicht genehmigen');
+  await K.behandlePrivatVorstellung(ctxText(anon, { id: anon.id, type: 'private' }, 'Xaver, über das Webinar zu GeldHelden gekommen'));
+  pruefe(zaehle('approveChatJoinRequest', (a) => a[1] === anon.id) === 1, '8a: anonym nach Vorstellung genehmigen');
+
+  // 48 Std. ohne Antwort -> ablehnen; DM nicht moeglich -> trotzdem nach 48 Std. ablehnen
+  reset();
+  dmGesperrt.add(7006);
+  await K.aufBeitrittsanfrage(tg, anfrage({ id: 7005, first_name: 'Schlaefer', username: 'zzz' }));
+  await K.aufBeitrittsanfrage(tg, anfrage({ id: 7006, first_name: 'Stumm', username: 'stumm' }));
+  const st = getDatabase().prepare("SELECT status FROM kodex_anfrage WHERE user_id = 7006").get() as any;
+  pruefe(st?.status === 'dm_fehler', '8a: DM-Fehler nicht vermerkt: ' + st?.status);
+  getDatabase().prepare('UPDATE kodex_anfrage SET created_at = ? WHERE user_id IN (7005, 7006)').run(Date.now() - 49 * 3600000);
+  const ab = await K.lehneAbgelaufeneAb(tg);
+  pruefe(ab.abgelehnt === 2 && zaehle('declineChatJoinRequest') === 2, '8a: nach 48 Std. muss abgelehnt werden: ' + JSON.stringify(ab));
+  dmGesperrt.delete(7006);
 
   // 9.-12. Stufen
   pruefe(K.naechsteStufe(0, 'verwarnung') === 1 && K.naechsteStufe(1, 'verwarnung') === 2 && K.naechsteStufe(2, 'verwarnung') === 3 && K.naechsteStufe(3, 'verwarnung') === 3, '9: Stufenfolge Verwarnung');
