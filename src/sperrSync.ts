@@ -8,7 +8,11 @@
  *   Quelle = blacklist (Cross-Ban/Admin-Ban) UND users.status='banned' (Sperren ohne Blacklist-Zeile).
  *   Stand je Konto in `sperrsync_stand` (user_id, username, gesendet_at); neu oder anderer @Name = senden.
  * Idempotent: MeinCEO legt je Telegram-ID genau einen Eintrag an; mehrfaches Senden aendert nichts.
- * Entsperren wird NICHT gespiegelt (Aufheben in MeinCEO per /unban), damit ein Lesefehler nie die Liste leert.
+ * Entsperren wird seit 28.11.2026 gespiegelt (Feld `entsperren`): Wer im Stand steht, aber nicht mehr gesperrt ist.
+ * MeinCEO nimmt dabei NUR Eintraege herunter, die vom GH-Shield stammen (eigene MeinCEO-Sperren bleiben).
+ * Schutz gegen einen Lesefehler, der die Liste leeren wuerde: hoechstens MAX_ENTSPERREN je Lauf, und nur wenn
+ * die aktuelle Sperrliste nicht auf weniger als die Haelfte des gesendeten Stands geschrumpft ist.
+ * Der Stand wird erst geloescht, wenn MeinCEO die Entsperrungen bestaetigt (Antwortfeld `entsperrt`).
  *
  * Ohne MEINCEO_SPERRSYNC_URL und MEINCEO_SPERRSYNC_TOKEN tut der Job nichts. Fehler gehen als [Shield][ERROR]
  * ins Log (Melder), je Fehlerart hoechstens 1x/30 Min.
@@ -95,6 +99,24 @@ export function offeneEintraege(alle: SperrEintrag[]): { neu: SperrEintrag[]; ge
   return { neu, geaendert };
 }
 
+const MAX_ENTSPERREN = 50;
+
+/** Konten, die an MeinCEO gesendet wurden, aber nicht mehr gesperrt sind. Leer bei unplausibler Lage. */
+export function offeneEntsperrungen(alle: SperrEintrag[]): { ids: number[]; grund: string | null } {
+  const db = getDatabase();
+  const stand = (db.prepare('SELECT user_id FROM sperrsync_stand').all() as Array<{ user_id: number }>).map((r) => r.user_id);
+  if (stand.length === 0) return { ids: [], grund: null };
+  if (alle.length < stand.length / 2) {
+    return { ids: [], grund: `Sperrliste unplausibel klein (${alle.length} gegen ${stand.length} gesendete) - keine Entsperrungen` };
+  }
+  const aktuell = new Set(alle.map((e) => e.tg_user_id));
+  const weg = stand.filter((id) => !aktuell.has(id) && !isAdmin(id) && !isTeamMember(id));
+  if (weg.length > MAX_ENTSPERREN) {
+    return { ids: [], grund: `${weg.length} Entsperrungen auf einmal (Grenze ${MAX_ENTSPERREN}) - bitte pruefen, nichts gesendet` };
+  }
+  return { ids: weg, grund: null };
+}
+
 export function unterschrift(secret: string, zeit: number, body: string): string {
   return createHash('sha256').update(`${secret}.${zeit}.${body}`).digest('hex');
 }
@@ -117,16 +139,22 @@ export async function runSperrSync(): Promise<{ gesendet: number; neu: number; a
   try {
     stelleTabelleSicher();
     const db = getDatabase();
-    const { neu, geaendert } = offeneEintraege(sammleSperren());
+    const alle = sammleSperren();
+    const { neu, geaendert } = offeneEintraege(alle);
     const zuSenden = [...neu, ...geaendert];
-    if (zuSenden.length === 0) return { gesendet: 0, neu: 0, aktualisiert: 0 };
+    const ent = offeneEntsperrungen(alle);
+    if (ent.grund) fehlerLog(ent.grund);
+    let entsperren = ent.ids;
+    if (zuSenden.length === 0 && entsperren.length === 0) return { gesendet: 0, neu: 0, aktualisiert: 0 };
 
     let neuMc = 0;
     let aktMc = 0;
     let gesendet = 0;
-    for (let i = 0; i < zuSenden.length; i += BATCH) {
+    let entsperrt = 0;
+    for (let i = 0; i < Math.max(zuSenden.length, 1); i += BATCH) {
       const teil = zuSenden.slice(i, i + BATCH);
-      const body = JSON.stringify({ quelle: 'gh-shield', eintraege: teil });
+      const mitEntsperren = i === 0 && entsperren.length > 0 ? entsperren : null;
+      const body = JSON.stringify(mitEntsperren ? { quelle: 'gh-shield', eintraege: teil, entsperren: mitEntsperren } : { quelle: 'gh-shield', eintraege: teil });
       const zeit = Math.floor(Date.now() / 1000);
       const antwort = await fetch(url, {
         method: 'POST',
@@ -142,7 +170,7 @@ export async function runSperrSync(): Promise<{ gesendet: number; neu: number; a
       if (!antwort.ok) {
         throw new Error(`HTTP ${antwort.status} von MeinCEO`);
       }
-      const j = (await antwort.json()) as { neu?: number; aktualisiert?: number; verarbeitet?: number };
+      const j = (await antwort.json()) as { neu?: number; aktualisiert?: number; verarbeitet?: number; entsperrt?: number; entsperren_uebersprungen?: number };
       if (typeof j.verarbeitet !== 'number' || j.verarbeitet !== teil.length) {
         throw new Error(`MeinCEO bestaetigt ${j.verarbeitet} von ${teil.length} Eintraegen`);
       }
@@ -152,9 +180,21 @@ export async function runSperrSync(): Promise<{ gesendet: number; neu: number; a
       const merke = db.prepare('INSERT INTO sperrsync_stand (user_id, username, gesendet_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, gesendet_at = excluded.gesendet_at');
       const jetzt = Date.now();
       db.transaction(() => { for (const e of teil) merke.run(e.tg_user_id, e.username, jetzt); })();
+      if (mitEntsperren) {
+        if (typeof j.entsperrt === 'number') {
+          // MeinCEO hat die Entsperrungen angenommen (auch "uebersprungen" = dort nicht mehr gelistet) -> Stand weg.
+          const loesche = db.prepare('DELETE FROM sperrsync_stand WHERE user_id = ?');
+          db.transaction(() => { for (const id of mitEntsperren) loesche.run(id); })();
+          entsperrt += j.entsperrt;
+          console.log(`[SperrSync] ${mitEntsperren.length} Entsperrung(en) an MeinCEO (dort entfernt: ${j.entsperrt}, nicht gelistet: ${j.entsperren_uebersprungen ?? 0})`);
+        } else {
+          fehlerLog('MeinCEO kennt das Feld "entsperren" noch nicht - Entsperrungen bleiben offen');
+        }
+      }
     }
     db.prepare('INSERT INTO sperrsync_log (created_at, gesendet, neu, aktualisiert, fehler) VALUES (?, ?, ?, ?, NULL)').run(Date.now(), gesendet, neuMc, aktMc);
-    console.log(`[SperrSync] ${gesendet} Sperren an MeinCEO gesendet (neu ${neuMc}, aktualisiert ${aktMc})`);
+    if (gesendet > 0) console.log(`[SperrSync] ${gesendet} Sperren an MeinCEO gesendet (neu ${neuMc}, aktualisiert ${aktMc})`);
+    void entsperrt;
     return { gesendet, neu: neuMc, aktualisiert: aktMc };
   } catch (error: unknown) {
     const text = error instanceof Error ? error.message : String(error);

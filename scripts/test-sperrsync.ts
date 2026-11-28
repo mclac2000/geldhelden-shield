@@ -35,6 +35,7 @@ async function main(): Promise<void> {
   const empfangen: any[] = [];
   let antwortStatus = 200;
   let verarbeitetDelta = 0;
+  let kenntEntsperren = false;
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
@@ -43,8 +44,10 @@ async function main(): Promise<void> {
       const gueltig = req.headers.authorization === `Bearer ${TOKEN}` && req.headers['x-sync-signatur'] === unterschrift(TOKEN, zeit, body);
       empfangen.push({ gueltig, body: JSON.parse(body) });
       res.writeHead(antwortStatus, { 'Content-Type': 'application/json' });
-      const n = JSON.parse(body).eintraege.length;
-      res.end(JSON.stringify({ verarbeitet: n + verarbeitetDelta, neu: n, aktualisiert: 0 }));
+      const b = JSON.parse(body);
+      const n = b.eintraege.length;
+      const ent = kenntEntsperren && Array.isArray(b.entsperren) ? { entsperrt: b.entsperren.length, entsperren_uebersprungen: 0 } : {};
+      res.end(JSON.stringify({ verarbeitet: n + verarbeitetDelta, neu: n, aktualisiert: 0, ...ent }));
     });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
@@ -100,13 +103,36 @@ async function main(): Promise<void> {
   r = await runSperrSync();
   pruefe(r?.gesendet === 1, `Wiederholung gesendet=${r?.gesendet}`);
 
+  // Entsperrungen (28.11.2026): 1002 wird entsperrt
+  db.prepare('DELETE FROM blacklist WHERE user_id = 1002').run();
+  const vorher = empfangen.length;
+  r = await runSperrSync();
+  const b8 = empfangen[vorher]?.body;
+  pruefe(JSON.stringify(b8?.entsperren) === '[1002]' && Array.isArray(b8?.eintraege) && b8.eintraege.length === 0, 'Entsperrung nicht gesendet: ' + JSON.stringify(b8));
+  pruefe(db.prepare('SELECT COUNT(*) c FROM sperrsync_stand WHERE user_id = 1002').get().c === 1, 'alter MeinCEO ohne Feld: Stand darf nicht geloescht werden');
+  kenntEntsperren = true;
+  r = await runSperrSync();
+  pruefe(db.prepare('SELECT COUNT(*) c FROM sperrsync_stand WHERE user_id = 1002').get().c === 0, 'bestaetigte Entsperrung: Stand nicht geloescht');
+  const vorher2 = empfangen.length;
+  r = await runSperrSync();
+  pruefe(empfangen.length === vorher2, 'nach bestaetigter Entsperrung wird erneut gesendet');
+  // Schutz: 60 Konten auf einmal "entsperrt" -> nichts senden
+  const ins = db.prepare('INSERT INTO sperrsync_stand (user_id, username, gesendet_at) VALUES (?, NULL, ?)');
+  for (let i = 0; i < 60; i++) ins.run(50000 + i, Date.now());
+  for (let i = 0; i < 60; i++) { neuerUser(60000 + i); addToBlacklist(60000 + i, 0, 'Masse'); } // Liste bleibt plausibel gross
+  db.prepare('INSERT INTO sperrsync_stand (user_id, username, gesendet_at) SELECT user_id, NULL, 1 FROM blacklist WHERE user_id >= 60000').run();
+  const vorher3 = empfangen.length;
+  r = await runSperrSync();
+  pruefe(empfangen.slice(vorher3).every((x) => !x.body.entsperren), 'mehr als 50 Entsperrungen auf einmal wurden gesendet');
+  pruefe(db.prepare('SELECT COUNT(*) c FROM sperrsync_stand WHERE user_id >= 50000 AND user_id < 50060').get().c === 60, 'Stand bei Schutzfall veraendert');
+
   server.close();
   fs.rmSync(tmp, { recursive: true, force: true });
   if (fehler.length) {
     console.error('SPERRSYNC-TEST ROT:\n - ' + fehler.join('\n - '));
     process.exit(1);
   }
-  console.log('SPERRSYNC-TEST OK (7 Pruefungen)');
+  console.log('SPERRSYNC-TEST OK (10 Pruefungen)');
   process.exit(0);
 }
 main().catch((e) => { console.error(e); process.exit(1); });

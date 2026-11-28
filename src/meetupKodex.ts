@@ -15,6 +15,8 @@
  *   3. VERWARNSYSTEM wie im Freiheits-Helden-Club, Zaehlung gemeinsam ueber alle Meetup-Gruppen:
  *        Stufe 1 = Verwarnung, Stufe 2 = 7 Tage stumm (in allen Meetup-Gruppen), Stufe 3 = Ausschluss.
  *        Werbung/Investment-Verkauf mit Beleg startet direkt bei Stufe 2.
+ *        STUFE 3 = AUSSCHLUSS IN ALLEN GELDHELDEN-GRUPPEN (banUserGlobally, wie ein Admin-Bann; geht auch in die
+ *        gemeinsame Sperrliste zu MeinCEO). Entscheidung Marco 28.11.2026 — bewusst so, nicht auf Meetup-Gruppen begrenzen.
  *      KEIN SCHRITT OHNE BELEG: /verwarnen und /werbung gehen nur als Antwort auf die Nachricht (die
  *      Nachricht wird vorher in den Admin-Log weitergeleitet = gespeicherter Beleg) oder mit einer
  *      Meldungsnummer (M123) aus dem Meldeweg (weitergeleitete Privatnachricht / Screenshot).
